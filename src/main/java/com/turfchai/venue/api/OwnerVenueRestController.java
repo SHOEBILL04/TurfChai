@@ -1,5 +1,6 @@
 package com.turfchai.venue.api;
 
+import com.turfchai.security.AuthenticatedUser;
 import com.turfchai.security.UserPrincipal;
 import com.turfchai.venue.dto.owner.CreatePitchRequest;
 import com.turfchai.venue.dto.owner.CreateVenueRequest;
@@ -44,6 +45,7 @@ import java.util.List;
  * DELETE /api/v1/owner/venues/{id}/pitches/{pitchId}       — deactivate pitch
  * POST   /api/v1/owner/venues/{id}/pricing-rules           — upsert pricing rule
  * DELETE /api/v1/owner/venues/{id}/pricing-rules/{ruleId}  — remove rule
+ * PUT    /api/v1/owner/venues/{id}/status                  — publish / unpublish
  * GET    /api/v1/owner/venues/{id}/slot-price              — calculate slot price
  * </pre>
  */
@@ -56,7 +58,7 @@ public class OwnerVenueRestController {
     private final SlotPricingRuleEngine pricingEngine;
 
     public OwnerVenueRestController(VenueManagementService managementService,
-                                     SlotPricingRuleEngine pricingEngine) {
+            SlotPricingRuleEngine pricingEngine) {
         this.managementService = managementService;
         this.pricingEngine = pricingEngine;
     }
@@ -68,20 +70,22 @@ public class OwnerVenueRestController {
     public VenueManagementDto createVenue(
             @AuthenticationPrincipal UserPrincipal principal,
             @Valid @RequestBody CreateVenueRequest request) {
-        return managementService.createVenue(principal.getId(), request);
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        return managementService.createVenue(ownerId, request);
     }
 
     @GetMapping
     public List<VenueManagementDto> listVenues(
             @AuthenticationPrincipal UserPrincipal principal) {
-        return managementService.listOwnerVenues(principal.getId());
+        return managementService.listOwnerVenues(AuthenticatedUser.requireId(principal));
     }
 
     @GetMapping("/{id}")
     public VenueManagementDto getVenue(
             @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long id) {
-        return managementService.getOwnerVenue(principal.getId(), id);
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        return managementService.getOwnerVenue(ownerId, id);
     }
 
     @PutMapping("/{id}")
@@ -89,7 +93,20 @@ public class OwnerVenueRestController {
             @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long id,
             @Valid @RequestBody UpdateVenueRequest request) {
-        return managementService.updateVenue(principal.getId(), id, request);
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        return managementService.updateVenue(ownerId, id, request);
+    }
+
+    @PutMapping("/{id}/status")
+    public VenueManagementDto updateStatus(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long id,
+            @RequestBody java.util.Map<String, String> request) {
+        String status = request.get("status");
+        if (status == null || status.isBlank()) {
+            throw new IllegalArgumentException("Status cannot be empty");
+        }
+        return managementService.updateVenueStatus(principal.getId(), id, status);
     }
 
     // ── Pitches ────────────────────────────────────────────────────────────
@@ -141,10 +158,52 @@ public class OwnerVenueRestController {
         managementService.deletePricingRule(principal.getId(), id, ruleId);
     }
 
+    // ── Owner Calendar Grid ────────────────────────────────────────────────
+    @GetMapping("/{id}/calendar")
+    public ResponseEntity<com.turfchai.venue.dto.owner.OwnerCalendarDto> getCalendar(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long id,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        LocalDate targetDate = date != null ? date : LocalDate.now();
+        return ResponseEntity.ok(managementService.getOwnerCalendar(ownerId, id, targetDate));
+    }
+
+    @PostMapping("/{id}/slots/{slotId}/block")
+    public ResponseEntity<Void> blockSlot(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long id,
+            @PathVariable Long slotId) {
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        managementService.blockSlot(ownerId, id, slotId);
+        return ResponseEntity.ok().build();
+    }
+
+    @PostMapping("/{id}/slots/{slotId}/unblock")
+    public ResponseEntity<Void> unblockSlot(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long id,
+            @PathVariable Long slotId) {
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        managementService.unblockSlot(ownerId, id, slotId);
+        return ResponseEntity.ok().build();
+    }
+
+    @PostMapping("/{id}/manual-booking")
+    public ResponseEntity<Void> createManualBooking(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long id,
+            @RequestBody com.turfchai.venue.dto.owner.ManualBookingRequestDto req) {
+        Long ownerId = AuthenticatedUser.requireId(principal);
+        managementService.createManualBooking(ownerId, id, req);
+        return ResponseEntity.ok().build();
+    }
+
     // ── Dynamic Slot Price ─────────────────────────────────────────────────
 
     /**
-     * GET /api/v1/owner/venues/{id}/slot-price?sport=football&date=2026-08-10&start=18:00&end=19:30
+     * GET
+     * /api/v1/owner/venues/{id}/slot-price?sport=football&date=2026-08-10&start=18:00&end=19:30
      */
     @GetMapping("/{id}/slot-price")
     public ResponseEntity<SlotPriceResponse> getSlotPrice(

@@ -34,7 +34,6 @@ export const OWNER_NAV_LINKS = [
   { to: paths.owner.customers, label: 'Customers', icon: '👥' },
   { to: paths.owner.promotions, label: 'Promotions', icon: '🎁' },
   { to: paths.owner.reviews, label: 'Reviews', icon: '⭐' },
-  { to: paths.owner.staff, label: 'Staff & Shifts', icon: '🧑‍🤝‍🧑' },
 ];
 
 /** Admin console navigation. */
@@ -44,5 +43,6 @@ export const ADMIN_NAV_LINKS = [
   { to: paths.admin.turfs, label: 'Turfs' },
   { to: paths.admin.users, label: 'Users' },
   { to: paths.admin.activity, label: 'Activity' },
+  { to: paths.admin.payouts, label: 'Payouts' },
   { to: paths.admin.admins, label: 'Admins' },
 ];

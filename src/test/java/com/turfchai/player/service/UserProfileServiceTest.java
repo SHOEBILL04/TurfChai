@@ -1,6 +1,6 @@
 package com.turfchai.player.service;
 
-import com.turfchai.player.api.UserProfileRestController;
+import com.turfchai.player.config.PlayerDataSeeder;
 import com.turfchai.player.dto.PlayerProfileDto;
 import com.turfchai.player.dto.UpdateProfileRequest;
 import com.turfchai.player.repository.SavedVenueRepository;
@@ -23,7 +23,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@org.springframework.test.context.ActiveProfiles({"test", "dev"})
+@org.springframework.test.context.ActiveProfiles({ "test", "dev" })
 @SpringBootTest
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:profile-test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE",
@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 })
 class UserProfileServiceTest {
 
-    private static final UUID DEMO = UserProfileRestController.DEMO_USER_ID;
+    private static final UUID DEMO = PlayerDataSeeder.DEMO_PLAYER_PUBLIC_ID;
 
     @Autowired
     private UserProfileService service;
@@ -66,15 +66,16 @@ class UserProfileServiceTest {
     void partialUpdateChangesOnlyProvidedFields() {
         PlayerProfileDto before = service.getProfile(DEMO);
         PlayerProfileDto after = service.updateProfile(DEMO, new UpdateProfileRequest(
-                "Nazia Rahman", null, "Weekend striker", "advanced", null, List.of("Futsal"), null));
+                "Nazia Rahman", null, "Weekend striker", "advanced", null, List.of("Futsal"), null, "Goalkeeper"));
 
         assertThat(after.fullName()).isEqualTo("Nazia Rahman");
-        assertThat(after.avatarInitials()).isEqualTo("NR");   // derived from new name
+        assertThat(after.avatarInitials()).isEqualTo("NR"); // derived from new name
         assertThat(after.bio()).isEqualTo("Weekend striker");
         assertThat(after.playStyle()).isEqualTo("advanced");
-        assertThat(after.preferredSports()).containsExactly("futsal");  // normalized lower-case
-        assertThat(after.area()).isEqualTo(before.area());              // untouched
-        assertThat(after.playerRole()).isEqualTo(before.playerRole());  // untouched
+        assertThat(after.preferredSports()).containsExactly("futsal"); // normalized lower-case
+        assertThat(after.area()).isEqualTo(before.area()); // untouched
+        assertThat(after.playerRole()).isEqualTo(before.playerRole()); // untouched
+        assertThat(after.position()).isEqualTo("Goalkeeper"); // new field
     }
 
     @Test

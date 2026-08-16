@@ -2,23 +2,34 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { getMyProfile } from '@/api/players';
 import { useApi } from '@/hooks/useApi';
+import { useSession } from '@/hooks/useSession';
 import { paths } from '@/routes/paths';
 import { DASHBOARD_SECTIONS, profileCompletion } from './sections';
 import './DashboardLayout.css';
 
 export default function DashboardLayout() {
-  const me = useApi(() => getMyProfile(), []);
-  const profile = me.data;
+  const session = useSession();
+  // Preferences (skill level, sports, times) only exist on the player profile,
+  // and only this dashboard and onboarding read them — so it is fetched here
+  // rather than on every page in the app.
+  const playerApi = useApi(
+    () => (session.signedIn ? getMyProfile() : Promise.resolve(null)),
+    [session.signedIn],
+  );
+  const profile = playerApi.data ? { ...session.user, ...playerApi.data } : session.user;
+  const fullName = profile?.fullName || 'Player';
   const completion = profileCompletion(profile);
+  const profileState = { loading: playerApi.loading, error: playerApi.error, reload: playerApi.reload };
 
   const initials =
-    profile?.avatarInitials ||
-    (profile?.fullName ?? '')
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join('');
+    (fullName ?? '').split(/\s+/).filter(Boolean).length === 1
+      ? (fullName ?? '').trim().slice(0, 2).toUpperCase()
+      : (fullName ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((part) => part[0]?.toUpperCase())
+          .join('') || '·';
 
   return (
     <>
@@ -30,7 +41,7 @@ export default function DashboardLayout() {
               {initials || '·'}
             </span>
             <div className="dash-me-text">
-              <b>{profile?.fullName ?? (me.loading ? 'Loading…' : 'Your profile')}</b>
+              <b>{profile?.fullName ?? (session.loading ? 'Loading…' : 'Your profile')}</b>
               <span>{profile?.area ?? ''}</span>
             </div>
           </div>
@@ -59,18 +70,13 @@ export default function DashboardLayout() {
                   {section.icon}
                 </span>
                 <span className="dash-label">{section.label}</span>
-                {section.pending ? (
-                  <span className="dash-soon" title="Waiting on its service">
-                    soon
-                  </span>
-                ) : null}
               </NavLink>
             ))}
           </nav>
         </aside>
 
         <main className="dash-main">
-          <Outlet context={{ profile, completion, profileState: me }} />
+          <Outlet context={{ profile, completion, profileState }} />
         </main>
       </div>
     </>

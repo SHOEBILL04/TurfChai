@@ -12,6 +12,8 @@ import com.turfchai.venue.repository.VenueRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.annotation.Profile;
+import org.springframework.core.annotation.Order;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,15 +32,23 @@ import java.util.UUID;
  * Auto-seeds a realistic demo dataset on startup.
  * Triggers when the {@code users} table has fewer than 50 rows.
  *
- * <p>Part A of the AdminDemoDataSeeder plan:
+ * <p>
+ * <b>Demo data only.</b> Restricted to the dev/test/ci profiles: this writes
+ * hundreds of fabricated users, venues and turf requests, which must never
+ * reach a real database.
+ *
+ * <p>
+ * Part A of the AdminDemoDataSeeder plan:
  * <ul>
- *   <li>800 Users across all roles, spread over 6 months</li>
- *   <li>40 Venues with 2–3 Pitches each (Dhaka areas)</li>
- *   <li>10 TurfRequests in various states</li>
+ * <li>800 Users across all roles, spread over 6 months</li>
+ * <li>40 Venues with 2–3 Pitches each (Dhaka areas)</li>
+ * <li>10 TurfRequests in various states</li>
  * </ul>
  */
 @Slf4j
 @Component
+@Profile({ "dev", "test", "ci" })
+@Order(10)
 @RequiredArgsConstructor
 public class AdminDemoDataSeeder implements CommandLineRunner {
 
@@ -52,84 +62,109 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
     // ── Name pools ────────────────────────────────────────────────────────
 
     private static final String[] FIRST_NAMES = {
-        "Fahim", "Nadia", "Tariq", "Meem", "Rahim", "Sadia", "Arman", "Tania",
-        "Imran", "Riya", "Karim", "Fatema", "Jakir", "Layla", "Rasel", "Sumaiya",
-        "Shamim", "Nusrat", "Naim", "Mitu", "Riyad", "Sabina", "Farhan", "Ayesha",
-        "Sagor", "Jannatul", "Mizan", "Tasnim", "Rubel", "Noor", "Abdur", "Rifat",
-        "Masum", "Shirin", "Pavel", "Brishty", "Shakil", "Parveen", "Shohag", "Meher",
-        "Habib", "Sunita", "Zahid", "Liza", "Tomal", "Ruma", "Babu", "Tamanna",
-        "Robin", "Moni"
+            "Fahim", "Nadia", "Tariq", "Meem", "Rahim", "Sadia", "Arman", "Tania",
+            "Imran", "Riya", "Karim", "Fatema", "Jakir", "Layla", "Rasel", "Sumaiya",
+            "Shamim", "Nusrat", "Naim", "Mitu", "Riyad", "Sabina", "Farhan", "Ayesha",
+            "Sagor", "Jannatul", "Mizan", "Tasnim", "Rubel", "Noor", "Abdur", "Rifat",
+            "Masum", "Shirin", "Pavel", "Brishty", "Shakil", "Parveen", "Shohag", "Meher",
+            "Habib", "Sunita", "Zahid", "Liza", "Tomal", "Ruma", "Babu", "Tamanna",
+            "Robin", "Moni"
     };
 
     private static final String[] LAST_NAMES = {
-        "Rahman", "Hossain", "Islam", "Amin", "Chowdhury", "Ahmed", "Khan", "Sultana",
-        "Begum", "Malik", "Sarkar", "Molla", "Hasan", "Uddin", "Mia", "Bhuiyan",
-        "Dey", "Roy", "Paul", "Biswas"
+            "Rahman", "Hossain", "Islam", "Amin", "Chowdhury", "Ahmed", "Khan", "Sultana",
+            "Begum", "Malik", "Sarkar", "Molla", "Hasan", "Uddin", "Mia", "Bhuiyan",
+            "Dey", "Roy", "Paul", "Biswas"
     };
 
     private static final String[] AREAS = {
-        "Mirpur", "Gulshan", "Dhanmondi", "Banani", "Mohammadpur",
-        "Uttara", "Badda", "Rampura", "Wari", "Khilgaon"
+            "Mirpur", "Gulshan", "Dhanmondi", "Banani", "Mohammadpur",
+            "Uttara", "Badda", "Rampura", "Wari", "Khilgaon"
     };
 
+    /**
+     * Weighted acquisition-channel distribution (100 entries) assigned to users.
+     */
+    private static final String[] SIGNUP_CHANNELS = buildChannelPool();
+
+    private static String[] buildChannelPool() {
+        String[] pool = new String[100];
+        String[][] plan = {
+                { "Organic Search", "30" },
+                { "Direct", "20" },
+                { "Meta/Facebook Ads", "20" },
+                { "App Store Referral", "15" },
+                { "TikTok Campaigns", "10" },
+                { "Referrals", "5" },
+        };
+        int idx = 0;
+        for (String[] entry : plan) {
+            int count = Integer.parseInt(entry[1]);
+            for (int i = 0; i < count; i++) {
+                pool[idx++] = entry[0];
+            }
+        }
+        return pool;
+    }
+
     private static final String[] VENUE_NAMES = {
-        "Kick-Off Arena", "GreenTurf Annex", "Champions Ground", "Futsal Hub Dhaka",
-        "Prime Pitch Mirpur", "Skyline Sports Complex", "TurfMaster Gulshan",
-        "Goal Line Arena", "The Pitch House", "Elite Futsal Zone",
-        "Victory Ground", "Blue Star Arena", "Sunrise Sports Club",
-        "Urban Turf Co.", "Lightning Fields", "Alpha Futsal", "Dream Pitch",
-        "Phoenix Arena", "Royal Turf Club", "Flash Kick Arena",
-        "Goal Rush Ground", "TurfNation", "Sportika Dhaka", "Kickstart Arena",
-        "Green Star Futsal", "PlayZone Uttara", "Pro Pitch Banani",
-        "Arena X Rampura", "City Kick Arena", "TurfWorld Dhanmondi",
-        "SuperField Badda", "Metro Futsal", "Thunder Ground", "Apex Sports Hub",
-        "Precision Pitch", "Turf Republic", "SportSkill Arena", "FastFoot Hub",
-        "Zone 5 Futsal", "NetBuster Grounds"
+            "Kick-Off Arena", "GreenTurf Annex", "Champions Ground", "Futsal Hub Dhaka",
+            "Prime Pitch Mirpur", "Skyline Sports Complex", "TurfMaster Gulshan",
+            "Goal Line Arena", "The Pitch House", "Elite Futsal Zone",
+            "Victory Ground", "Blue Star Arena", "Sunrise Sports Club",
+            "Urban Turf Co.", "Lightning Fields", "Alpha Futsal", "Dream Pitch",
+            "Phoenix Arena", "Royal Turf Club", "Flash Kick Arena",
+            "Goal Rush Ground", "TurfNation", "Sportika Dhaka", "Kickstart Arena",
+            "Green Star Futsal", "PlayZone Uttara", "Pro Pitch Banani",
+            "Arena X Rampura", "City Kick Arena", "TurfWorld Dhanmondi",
+            "SuperField Badda", "Metro Futsal", "Thunder Ground", "Apex Sports Hub",
+            "Precision Pitch", "Turf Republic", "SportSkill Arena", "FastFoot Hub",
+            "Zone 5 Futsal", "NetBuster Grounds"
     };
 
     private static final String[][] VENUE_ADDRESSES = {
-        {"Mirpur-10, Dhaka", "Mirpur"}, {"Gulshan-2, Dhaka", "Gulshan"},
-        {"Dhanmondi-27, Dhaka", "Dhanmondi"}, {"Banani Block-F, Dhaka", "Banani"},
-        {"Mohammadpur, Dhaka", "Mohammadpur"}, {"Uttara Sector 7, Dhaka", "Uttara"},
-        {"Badda, Dhaka", "Badda"}, {"Rampura, Dhaka", "Rampura"},
-        {"Wari, Dhaka", "Wari"}, {"Khilgaon, Dhaka", "Khilgaon"},
-        {"Mirpur-1, Dhaka", "Mirpur"}, {"Gulshan-1, Dhaka", "Gulshan"},
-        {"Dhanmondi-15, Dhaka", "Dhanmondi"}, {"Banani DOHS, Dhaka", "Banani"},
-        {"Mohammadpur Housing, Dhaka", "Mohammadpur"}, {"Uttara Sector 10, Dhaka", "Uttara"},
-        {"Badda Natun Bazar, Dhaka", "Badda"}, {"Rampura Bazar, Dhaka", "Rampura"},
-        {"Wari Circular Rd, Dhaka", "Wari"}, {"Khilgaon Taltola, Dhaka", "Khilgaon"},
-        {"Mirpur-12, Dhaka", "Mirpur"}, {"Gulshan Ave, Dhaka", "Gulshan"},
-        {"Dhanmondi-32, Dhaka", "Dhanmondi"}, {"Banani Road 11, Dhaka", "Banani"},
-        {"Mohammadpur Tajmahal, Dhaka", "Mohammadpur"}, {"Uttara Sector 4, Dhaka", "Uttara"},
-        {"Badda BSCIC, Dhaka", "Badda"}, {"Rampura TV Gate, Dhaka", "Rampura"},
-        {"Wari Tipu Sultan, Dhaka", "Wari"}, {"Khilgaon Chowdhurypara, Dhaka", "Khilgaon"},
-        {"Mirpur Ceramic Gate, Dhaka", "Mirpur"}, {"Gulshan Circle-1, Dhaka", "Gulshan"},
-        {"Dhanmondi Lake Road, Dhaka", "Dhanmondi"}, {"Banani Road 17, Dhaka", "Banani"},
-        {"Mohammadpur Central, Dhaka", "Mohammadpur"}, {"Uttara Sector 13, Dhaka", "Uttara"},
-        {"Badda Link Rd, Dhaka", "Badda"}, {"Rampura Malibagh, Dhaka", "Rampura"},
-        {"Wari Narinda, Dhaka", "Wari"}, {"Khilgaon Rail Gate, Dhaka", "Khilgaon"},
+            { "Mirpur-10, Dhaka", "Mirpur" }, { "Gulshan-2, Dhaka", "Gulshan" },
+            { "Dhanmondi-27, Dhaka", "Dhanmondi" }, { "Banani Block-F, Dhaka", "Banani" },
+            { "Mohammadpur, Dhaka", "Mohammadpur" }, { "Uttara Sector 7, Dhaka", "Uttara" },
+            { "Badda, Dhaka", "Badda" }, { "Rampura, Dhaka", "Rampura" },
+            { "Wari, Dhaka", "Wari" }, { "Khilgaon, Dhaka", "Khilgaon" },
+            { "Mirpur-1, Dhaka", "Mirpur" }, { "Gulshan-1, Dhaka", "Gulshan" },
+            { "Dhanmondi-15, Dhaka", "Dhanmondi" }, { "Banani DOHS, Dhaka", "Banani" },
+            { "Mohammadpur Housing, Dhaka", "Mohammadpur" }, { "Uttara Sector 10, Dhaka", "Uttara" },
+            { "Badda Natun Bazar, Dhaka", "Badda" }, { "Rampura Bazar, Dhaka", "Rampura" },
+            { "Wari Circular Rd, Dhaka", "Wari" }, { "Khilgaon Taltola, Dhaka", "Khilgaon" },
+            { "Mirpur-12, Dhaka", "Mirpur" }, { "Gulshan Ave, Dhaka", "Gulshan" },
+            { "Dhanmondi-32, Dhaka", "Dhanmondi" }, { "Banani Road 11, Dhaka", "Banani" },
+            { "Mohammadpur Tajmahal, Dhaka", "Mohammadpur" }, { "Uttara Sector 4, Dhaka", "Uttara" },
+            { "Badda BSCIC, Dhaka", "Badda" }, { "Rampura TV Gate, Dhaka", "Rampura" },
+            { "Wari Tipu Sultan, Dhaka", "Wari" }, { "Khilgaon Chowdhurypara, Dhaka", "Khilgaon" },
+            { "Mirpur Ceramic Gate, Dhaka", "Mirpur" }, { "Gulshan Circle-1, Dhaka", "Gulshan" },
+            { "Dhanmondi Lake Road, Dhaka", "Dhanmondi" }, { "Banani Road 17, Dhaka", "Banani" },
+            { "Mohammadpur Central, Dhaka", "Mohammadpur" }, { "Uttara Sector 13, Dhaka", "Uttara" },
+            { "Badda Link Rd, Dhaka", "Badda" }, { "Rampura Malibagh, Dhaka", "Rampura" },
+            { "Wari Narinda, Dhaka", "Wari" }, { "Khilgaon Rail Gate, Dhaka", "Khilgaon" },
     };
 
     private static final double[][] VENUE_COORDS = {
-        {23.8041, 90.3653}, {23.7805, 90.4150}, {23.7461, 90.3742}, {23.7937, 90.4012},
-        {23.7640, 90.3572}, {23.8759, 90.3995}, {23.7750, 90.4220}, {23.7672, 90.4261},
-        {23.7180, 90.4094}, {23.7559, 90.4354}, {23.8050, 90.3700}, {23.7820, 90.4120},
-        {23.7480, 90.3800}, {23.7960, 90.4050}, {23.7650, 90.3600}, {23.8780, 90.4010},
-        {23.7760, 90.4230}, {23.7680, 90.4270}, {23.7190, 90.4100}, {23.7570, 90.4360},
-        {23.8060, 90.3680}, {23.7830, 90.4140}, {23.7490, 90.3780}, {23.7970, 90.4060},
-        {23.7660, 90.3590}, {23.8770, 90.4000}, {23.7770, 90.4240}, {23.7690, 90.4280},
-        {23.7200, 90.4110}, {23.7580, 90.4370}, {23.8070, 90.3710}, {23.7840, 90.4160},
-        {23.7500, 90.3760}, {23.7980, 90.4080}, {23.7670, 90.3580}, {23.8760, 90.3990},
-        {23.7780, 90.4250}, {23.7700, 90.4290}, {23.7210, 90.4120}, {23.7590, 90.4380},
+            { 23.8041, 90.3653 }, { 23.7805, 90.4150 }, { 23.7461, 90.3742 }, { 23.7937, 90.4012 },
+            { 23.7640, 90.3572 }, { 23.8759, 90.3995 }, { 23.7750, 90.4220 }, { 23.7672, 90.4261 },
+            { 23.7180, 90.4094 }, { 23.7559, 90.4354 }, { 23.8050, 90.3700 }, { 23.7820, 90.4120 },
+            { 23.7480, 90.3800 }, { 23.7960, 90.4050 }, { 23.7650, 90.3600 }, { 23.8780, 90.4010 },
+            { 23.7760, 90.4230 }, { 23.7680, 90.4270 }, { 23.7190, 90.4100 }, { 23.7570, 90.4360 },
+            { 23.8060, 90.3680 }, { 23.7830, 90.4140 }, { 23.7490, 90.3780 }, { 23.7970, 90.4060 },
+            { 23.7660, 90.3590 }, { 23.8770, 90.4000 }, { 23.7770, 90.4240 }, { 23.7690, 90.4280 },
+            { 23.7200, 90.4110 }, { 23.7580, 90.4370 }, { 23.8070, 90.3710 }, { 23.7840, 90.4160 },
+            { 23.7500, 90.3760 }, { 23.7980, 90.4080 }, { 23.7670, 90.3580 }, { 23.8760, 90.3990 },
+            { 23.7780, 90.4250 }, { 23.7700, 90.4290 }, { 23.7210, 90.4120 }, { 23.7590, 90.4380 },
     };
 
     private static final String[] VENUE_STATUSES = {
-        "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",   // 32 LIVE
-        "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",
-        "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",
-        "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",
-        "SUSPENDED", "SUSPENDED", "SUSPENDED", "SUSPENDED", "SUSPENDED",   // 5 SUSPENDED
-        "DRAFT", "DRAFT", "DRAFT"                                          // 3 DRAFT
+            "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", // 32 LIVE
+            "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",
+            "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",
+            "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE", "LIVE",
+            "SUSPENDED", "SUSPENDED", "SUSPENDED", "SUSPENDED", "SUSPENDED", // 5 SUSPENDED
+            "DRAFT", "DRAFT", "DRAFT" // 3 DRAFT
     };
 
     // ── Boot trigger ──────────────────────────────────────────────────────
@@ -143,7 +178,8 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
     @Transactional
     public void seed(boolean force) {
         if (!force && userRepository.count() >= 50) {
-            log.info("[Seeder] Database already populated ({} users) — skipping demo data seeding.", userRepository.count());
+            log.info("[Seeder] Database already populated ({} users) — skipping demo data seeding.",
+                    userRepository.count());
             return;
         }
         log.info("[Seeder] Starting demo data seed...");
@@ -162,13 +198,13 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
         // Monthly distribution: spread createdAt across past 6 months
         // month offsets (0 = current month), counts per month
         int[][] monthlyPlan = {
-            // {monthsAgo, players, soloPlayers, hosts, owners}
-            {5, 55,  5, 5, 2},
-            {4, 75, 10, 8, 3},
-            {3, 100, 12, 9, 4},
-            {2, 120, 15, 10, 5},
-            {1, 150, 20, 10, 5},
-            {0, 120, 18, 8, 6},
+                // {monthsAgo, players, soloPlayers, hosts, owners}
+                { 5, 55, 5, 5, 2 },
+                { 4, 75, 10, 8, 3 },
+                { 3, 100, 12, 9, 4 },
+                { 2, 120, 15, 10, 5 },
+                { 1, 150, 20, 10, 5 },
+                { 0, 120, 18, 8, 6 },
         };
 
         int emailIndex = 0;
@@ -208,7 +244,7 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
         }
 
         // 4 ADMINs + 1 SUPER_ADMIN
-        String[] adminNames = {"Nadia Amin", "Farid Hasan", "Arman Habib", "Riya Sarkar"};
+        String[] adminNames = { "Nadia Amin", "Farid Hasan", "Arman Habib", "Riya Sarkar" };
         for (int i = 0; i < 4; i++) {
             allUsers.add(User.builder()
                     .fullName(adminNames[i])
@@ -224,19 +260,23 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
                     .updatedAt(OffsetDateTime.now())
                     .build());
         }
-        allUsers.add(User.builder()
-                .fullName("Super Admin")
-                .email("superadmin@turfchai.com")
-                .phone("+8801800000099")
-                .passwordHash(hash)
-                .role(RoleType.SUPER_ADMIN)
-                .status("ACTIVE")
-                .area("Dhaka")
-                .avatarInitials("SA")
-                .reliabilityScore(100)
-                .createdAt(OffsetDateTime.now().minusMonths(7))
-                .updatedAt(OffsetDateTime.now())
-                .build());
+        boolean hasSuperAdmin = allUsers.stream().anyMatch(u -> u.getRole() == RoleType.SUPER_ADMIN)
+                || userRepository.findAll().stream().anyMatch(u -> u.getRole() == RoleType.SUPER_ADMIN);
+        if (!hasSuperAdmin) {
+            allUsers.add(User.builder()
+                    .fullName("Super Admin")
+                    .email("superadmin@turfchai.com")
+                    .phone("+8801800000099")
+                    .passwordHash(hash)
+                    .role(RoleType.SUPER_ADMIN)
+                    .status("ACTIVE")
+                    .area("Dhaka")
+                    .avatarInitials("SA")
+                    .reliabilityScore(100)
+                    .createdAt(OffsetDateTime.now().minusMonths(7))
+                    .updatedAt(OffsetDateTime.now())
+                    .build());
+        }
 
         userRepository.saveAll(allUsers);
         log.info("[Seeder] Saved {} users", allUsers.size());
@@ -267,6 +307,7 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
                 .role(role)
                 .status(status)
                 .area(area)
+                .signupChannel(SIGNUP_CHANNELS[index % SIGNUP_CHANNELS.length])
                 .avatarInitials(initials(fullName))
                 .bio("Playing football since " + (2010 + RNG.nextInt(14)))
                 .reliabilityScore(60 + RNG.nextInt(41))
@@ -309,8 +350,10 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
                     .area(addressArea[1])
                     .lat(BigDecimal.valueOf(coords[0]))
                     .lng(BigDecimal.valueOf(coords[1]))
-                    .ratingAvg(BigDecimal.valueOf(3.5 + RNG.nextDouble() * 1.5).setScale(2, java.math.RoundingMode.HALF_UP))
-                    .reviewCount(10 + RNG.nextInt(291))
+                    // Rating and review count are NOT seeded: they are derived
+                    // from real review rows by ReviewService.recalculateVenueRating.
+                    // Inventing them here made venues advertise "167 reviews"
+                    // above a reviews tab that showed none.
                     .savedCount(5 + RNG.nextInt(150))
                     .verified(i < 28) // first 28 venues are verified
                     .tournamentReady(i % 5 == 0)
@@ -329,7 +372,7 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
 
             // Add 2–3 pitches per venue
             int pitchCount = 2 + (i % 2);
-            String[] formats = {"5_a_side", "7_a_side", "11_a_side"};
+            String[] formats = { "5_a_side", "7_a_side", "11_a_side" };
             for (int p = 0; p < pitchCount; p++) {
                 Pitch pitch = new Pitch();
                 pitch.setName("Pitch " + (char) ('A' + p));
@@ -355,15 +398,15 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
 
     private void seedTurfRequests(List<User> owners, List<Venue> venues) {
         List<TurfRequest> requests = new ArrayList<>();
-        String[] statuses  = {"PENDING", "PENDING", "PENDING", "PENDING", "PENDING", "PENDING",
-                              "APPROVED", "APPROVED", "REJECTED", "REJECTED"};
+        String[] statuses = { "PENDING", "PENDING", "PENDING", "PENDING", "PENDING", "PENDING",
+                "APPROVED", "APPROVED", "REJECTED", "REJECTED" };
         String[] venueNames = {
-            "Sunrise Futsal Hub", "Delta Pitch Zone", "Metro Arena Mirpur",
-            "Urban Kick Complex", "Skyfield Sports", "BlazeField Dhaka",
-            "TurfZone Uttara", "Sprint Kick Arena", "Neptune Grounds", "Atlas Futsal Hub"
+                "Sunrise Futsal Hub", "Delta Pitch Zone", "Metro Arena Mirpur",
+                "Urban Kick Complex", "Skyfield Sports", "BlazeField Dhaka",
+                "TurfZone Uttara", "Sprint Kick Arena", "Neptune Grounds", "Atlas Futsal Hub"
         };
-        String[] areas = {"Mirpur", "Gulshan", "Dhanmondi", "Banani", "Mohammadpur",
-                          "Uttara", "Badda", "Rampura", "Wari", "Khilgaon"};
+        String[] areas = { "Mirpur", "Gulshan", "Dhanmondi", "Banani", "Mohammadpur",
+                "Uttara", "Badda", "Rampura", "Wari", "Khilgaon" };
 
         for (int i = 0; i < 10; i++) {
             User owner = owners.get((i + 3) % owners.size());

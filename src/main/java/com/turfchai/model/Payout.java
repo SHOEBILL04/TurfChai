@@ -29,9 +29,6 @@ public class Payout {
     @Column(name = "venue_id")
     private Long venueId;
 
-    @Column(name = "bank_account_id")
-    private Long bankAccountId;
-
     @Column(name = "gross_amount", nullable = false, precision = 12, scale = 2)
     private BigDecimal grossAmount;
 
@@ -62,6 +59,9 @@ public class Payout {
 
     @Column(name = "period_end", nullable = false)
     private LocalDate periodEnd;
+
+    @Column(name = "scheduled_date", nullable = false)
+    private LocalDate scheduledDate;
 
     @Column(name = "settled_at")
     private OffsetDateTime settledAt;

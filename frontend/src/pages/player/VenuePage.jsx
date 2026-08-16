@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { Button } from '@/components/buttons/Button';
@@ -10,13 +10,19 @@ import { Badge } from '@/components/ui/Badge';
 import { Photo } from '@/components/ui/Photo';
 import { Stars } from '@/components/ui/Stars';
 import { Verified } from '@/components/ui/Tags';
-import { similarVenues as similarVenuesFallback } from '@/data/venues';
 import { getVenue, searchVenues, toSimilarCard } from '@/api/venues';
 import { getVenueSlots } from '@/api/bookings';
 import { getSavedVenues, toggleSavedVenue } from '@/api/players';
+import { getVenueReviews } from '@/api/venueReviews';
+import { getToken } from '@/api/client';
+import { shareOrCopy } from '@/utils/deviceActions';
+import { toUserMessage } from '@/utils/errorMessage';
+
 import { useApi } from '@/hooks/useApi';
 import { useDisclosure } from '@/hooks/useDisclosure';
+import { useSlotStream } from '@/hooks/useSlotStream';
 import { useToast } from '@/hooks/useToast';
+import { Alert } from '@/components/ui/Alert';
 import { paths } from '@/routes/paths';
 import './VenuePage.css';
 
@@ -30,23 +36,20 @@ const svgProps = {
   'aria-hidden': 'true',
 };
 
-const DATES = [
-  { id: '4', weekday: 'Mon', day: '4' },
-  { id: '5', weekday: 'Tue', day: '5' },
-  { id: '6', weekday: 'Wed', day: '6' },
-  { id: '7', weekday: 'Thu', day: '7' },
-  { id: '8', weekday: 'Fri', day: '8' },
-  { id: '9', weekday: 'Sat', day: '9' },
-  { id: '10', weekday: 'Sun', day: '10' },
-];
-
 /** Next 7 real calendar days — availability per day still needs the booking service. */
 function nextSevenDays(from) {
   return Array.from({ length: 7 }, (_, offset) => {
     const date = new Date(from);
     date.setDate(date.getDate() + offset);
     return {
-      id: date.toISOString().slice(0, 10),
+      // Local parts, not toISOString(): east of UTC the ISO date rolls back a
+      // day before dawn, so in Dhaka a 1am visitor saw "Fri 15" but queried
+      // the 14th. Matches `isoDay` in api/openGames.js.
+      id: [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, '0'),
+        String(date.getDate()).padStart(2, '0'),
+      ].join('-'),
       weekday: date.toLocaleDateString('en-GB', { weekday: 'short' }),
       day: String(date.getDate()),
     };
@@ -60,18 +63,11 @@ const GALLERY = [
   { id: 'alt3', variant: 'alt3' },
 ];
 
-const SPECS = [
-  { label: 'Surface', value: 'FIFA-grade Artificial Grass', sub: 'Relaid Jan 2026 · shock pad' },
-  { label: 'Lighting', value: '200-lux LED Floodlights', sub: 'Full night coverage' },
-  { label: 'Format', value: '7-a-side', sub: 'Max 16 players' },
-  { label: 'Booking', value: 'Instant Confirmation', sub: 'No approval needed' },
-];
-
 const formatLabel = (format) => (format ? format.replaceAll('_', '-') : null);
 
 /** Spec cells built from the venue's first active pitch + opening hours. */
 function specsOf(venue) {
-  if (!venue) return SPECS;
+  if (!venue) return [];
   const pitch = venue.pitches?.[0];
   const cells = [];
   if (pitch?.surfaceType) {
@@ -98,7 +94,7 @@ function specsOf(venue) {
       sub: venue.pitches?.length ? `${venue.pitches.length} pitch${venue.pitches.length > 1 ? 'es' : ''}` : null,
     });
   }
-  return cells.length ? cells : SPECS;
+  return cells;
 }
 
 /** '18:00:00' -> '6:00 PM' */
@@ -115,7 +111,20 @@ const bdt = (value) =>
 
 /** Backend SlotResponse -> the { id, time, price, status } shape SlotGrid renders. */
 function toGridSlot(slot) {
-  const status = slot.status.toLowerCase(); // 'available' | 'held' | 'booked'
+  // Defensive: the live stream overlays this field, so never assume it is set.
+  const rawStatus = String(slot.status ?? 'available').toLowerCase();
+  // The server decides what is sellable. A slot can be AVAILABLE and still be
+  // unbookable because its start time has passed, so `bookable` wins over
+  // `status` — rendering it as open would offer a time the API will refuse.
+  const elapsed = slot.bookable === false && rawStatus === 'available';
+  const status = elapsed ? 'blocked' : rawStatus;
+  const unavailableLabel = elapsed
+    ? 'Started'
+    : status === 'held'
+      ? 'Held'
+      : status === 'blocked'
+        ? 'Unavailable'
+        : 'Booked';
   const price =
     status === 'available' ? (
       <>
@@ -123,7 +132,7 @@ function toGridSlot(slot) {
         <span className="slot-meta">ends {formatTime(slot.endTime)}</span>
       </>
     ) : (
-      <span className="slot-meta">{status === 'held' ? 'Held' : 'Booked'}</span>
+      <span className="slot-meta">{unavailableLabel}</span>
     );
   return { id: slot.id, time: formatTime(slot.startTime), price, status };
 }
@@ -189,49 +198,50 @@ const AMENITY_ICONS = {
   ),
 };
 
-const RULES = [
-  'Turf shoes or mouldies only — no metal studs',
-  'Max 16 players per booking · no outside food on pitch',
-  'Slots end strictly on time — plan accordingly',
-];
+const RULE_ICONS = {
+  ok: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  ),
+  partial: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  ),
+  none: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+      <line x1="9" y1="9" x2="15" y2="15" />
+    </svg>
+  ),
+};
 
-const POLICY_TIERS = [
-  {
-    label: 'Cancel 24h+ before',
-    sub: 'Full refund',
-    icon: (
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <polyline points="20 6 9 17 4 12" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Cancel 6 – 24h before',
-    sub: '50% refund',
-    icon: (
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="10" />
-        <polyline points="12 6 12 12 16 14" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Cancel under 6h before',
-    sub: 'No refund',
-    icon: (
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="10" />
-        <line x1="15" y1="9" x2="9" y2="15" />
-        <line x1="9" y1="9" x2="15" y2="15" />
-      </svg>
-    ),
-  },
-];
-
-const REVIEW_FILTERS = [
-  { id: 'all', label: 'All' },
-  { id: 'parents', label: 'Parents (18)' },
-];
+/**
+ * The refund ladder this venue actually runs, mirroring RefundCalculatorService.
+ * It used to be a fixed 24h/6h table shown on every venue regardless of the
+ * policy the refund engine would really apply.
+ */
+function policyTiersOf(cancelPolicy) {
+  switch (cancelPolicy) {
+    case 'STRICT_NO_REFUND':
+      return [{ label: 'Any cancellation', sub: 'No refund', icon: RULE_ICONS.none }];
+    case 'FLEXIBLE_6H':
+      return [
+        { label: 'Cancel 6h+ before', sub: 'Full refund', icon: RULE_ICONS.ok },
+        { label: 'Cancel under 6h before', sub: 'No refund', icon: RULE_ICONS.none },
+      ];
+    case 'FREE_24H_50_6H':
+    default:
+      return [
+        { label: 'Cancel 24h+ before', sub: 'Full refund', icon: RULE_ICONS.ok },
+        { label: 'Cancel 6 – 24h before', sub: '50% refund', icon: RULE_ICONS.partial },
+        { label: 'Cancel under 6h before', sub: 'No refund', icon: RULE_ICONS.none },
+      ];
+  }
+}
 
 export default function VenuePage() {
   const { venueId } = useParams();
@@ -242,16 +252,23 @@ export default function VenuePage() {
   const [dateId, setDateId] = useState(() => dates[0].id);
   const [slotId, setSlotId] = useState(null);
   const [reviewFilter, setReviewFilter] = useState('all');
+  // Mirrors `slotId` for the stream callback, which must not depend on it —
+  // re-subscribing on every selection would tear down the connection.
+  const selectedSlotIdRef = useRef(slotId);
+  useEffect(() => {
+    selectedSlotIdRef.current = slotId;
+  });
 
-  // Live venue details by slug; static prototype copy remains as fallback.
+
   const detail = useApi(() => getVenue(venueId), [venueId]);
   const venue = detail.data;
+
   const similarApi = useApi(
     () => searchVenues({ size: 4, sort: 'rating' }).then((page) =>
       page.items.filter((item) => item.slug !== venueId).slice(0, 3).map(toSimilarCard)),
     [venueId],
   );
-  const similarVenues = similarApi.data ?? similarVenuesFallback;
+  const similarVenues = similarApi.data ?? [];
 
   // Live slot availability for the selected day; refetches when the venue
   // resolves (numeric id, not the slug in the URL) or the date changes.
@@ -259,12 +276,62 @@ export default function VenuePage() {
     () => (venue?.id ? getVenueSlots(venue.id, dateId) : Promise.resolve([])),
     [venue?.id, dateId],
   );
-  const slots = useMemo(() => (slotsApi.data ?? []).map(toGridSlot), [slotsApi.data]);
 
-  const name = venue?.name ?? 'Kick Off Arena';
-  const metaLine = venue ? `${venue.address}` : 'Road 27, Dhanmondi · 1.2 km';
-  const rating = venue ? String(venue.rating) : '4.8';
-  const reviewCount = venue ? venue.reviewCount : 214;
+  // Statuses pushed by the SSE stream since the last snapshot, keyed by slot
+  // id. Kept as an overlay rather than mutating `slotsApi.data` so a refetch
+  // always wins and the two sources can never drift apart permanently.
+  const [liveStatus, setLiveStatus] = useState({});
+  const streamKey = `${venue?.id ?? ''}@${dateId}`;
+  const [lastStreamKey, setLastStreamKey] = useState(streamKey);
+  if (lastStreamKey !== streamKey) {
+    // Adjust-state-during-render: a stale overlay must never survive a switch
+    // to another venue or day.
+    setLastStreamKey(streamKey);
+    setLiveStatus({});
+  }
+
+  const applyLiveChange = useCallback(
+    ({ slotId: changedId, status }) => {
+      setLiveStatus((current) =>
+        current[changedId] === status ? current : { ...current, [changedId]: status },
+      );
+      // Losing the slot you were about to book is the one case worth
+      // interrupting for — otherwise checkout would 409 on the hold. Read the
+      // selection from a ref: doing this inside a setState updater would fire
+      // the toast twice under StrictMode's double invocation.
+      if (status !== 'AVAILABLE' && selectedSlotIdRef.current === changedId) {
+        setSlotId(null);
+        showToast('That slot was just taken — pick another time');
+      }
+    },
+    [showToast],
+  );
+
+  const resyncSlots = useCallback(() => {
+    setLiveStatus({});
+    slotsApi.reload();
+  }, [slotsApi]);
+
+  useSlotStream({
+    venueId: venue?.id,
+    date: dateId,
+    enabled: Boolean(venue?.id),
+    onSlotChange: applyLiveChange,
+    onResync: resyncSlots,
+  });
+
+  const slots = useMemo(
+    () =>
+      (slotsApi.data ?? []).map((slot) =>
+        toGridSlot(liveStatus[slot.id] ? { ...slot, status: liveStatus[slot.id] } : slot),
+      ),
+    [slotsApi.data, liveStatus],
+  );
+
+  const name = venue?.name ?? (detail.loading ? 'Loading Venue...' : 'Turf Venue');
+  const metaLine = venue ? [venue.address, venue.area].filter(Boolean).join(', ') : '';
+  const rating = venue ? String(venue.rating ?? 0) : '0.0';
+  const reviewCount = venue ? (venue.reviewCount ?? 0) : 0;
 
   const specs = useMemo(() => specsOf(venue), [venue]);
   const amenities = useMemo(
@@ -277,6 +344,23 @@ export default function VenuePage() {
     [venue],
   );
 
+  const venueRulesList = useMemo(() => {
+    if (venue?.rules && venue.rules.length > 0) {
+      return Array.isArray(venue.rules) ? venue.rules : String(venue.rules).split(',').map((r) => r.trim());
+    }
+    // No invented house rules: a venue that has not published any says so.
+    return [];
+  }, [venue]);
+
+  const policyTiers = useMemo(() => policyTiersOf(venue?.cancelPolicy), [venue?.cancelPolicy]);
+
+  const photoList = useMemo(() => {
+    if (venue?.photos && venue.photos.length > 0) {
+      return Array.isArray(venue.photos) ? venue.photos : String(venue.photos).split(',').map((p) => p.trim());
+    }
+    return [];
+  }, [venue]);
+
   const pitch = venue?.pitches?.[0];
   /** Cheapest active rule drives the headline "from" price. */
   const cheapestRule = useMemo(() => {
@@ -286,11 +370,15 @@ export default function VenuePage() {
       : null;
   }, [venue]);
   const offPeakRule = venue?.pricing?.find((rule) => rule.windowType === 'OFF_PEAK');
-  const headlinePrice = cheapestRule ? bdt(cheapestRule.rate) : '৳2,500';
+  const headlinePrice = cheapestRule
+    ? bdt(cheapestRule.rate)
+    : venue?.basePrice
+    ? bdt(venue.basePrice)
+    : '৳0';
   const slotDuration = cheapestRule?.slotDurationMin ?? 90;
   const pitchLine = pitch
     ? [pitch.name, formatLabel(pitch.format), `${slotDuration}-min slots`].filter(Boolean).join(' · ')
-    : `Pitch 2 · 7-a-side · ${slotDuration}-min slots`;
+    : `${slotDuration}-min slots`;
 
   const selectedDateLabel = useMemo(() => {
     const picked = dates.find((date) => date.id === dateId) ?? dates[0];
@@ -321,15 +409,36 @@ export default function VenuePage() {
     }
   };
 
-  // Saved state for this venue's heart button.
+  // Saved state for this venue's heart button. The venue page is public, so
+  // the caller-scoped bookmark list is only read once there is a session.
+  const signedIn = Boolean(getToken());
+
+  const [reviewPageSize, setReviewPageSize] = useState(10);
+  const reviewsApi = useApi(
+    () => (venueId ? getVenueReviews(venueId, { page: 0, size: reviewPageSize }) : Promise.resolve(null)),
+    [venueId, reviewPageSize],
+  );
+  const allReviews = Array.isArray(reviewsApi.data?.items) ? reviewsApi.data.items : [];
+  // The "Parents" tab carried a hardcoded count of 18 and filtered nothing.
+  const parentReviews = allReviews.filter((review) => review.tags?.includes('parent'));
+  const reviewItems = reviewFilter === 'parents' ? parentReviews : allReviews;
+  const reviewFilters = [
+    { id: 'all', label: `All (${allReviews.length})` },
+    { id: 'parents', label: `Parents (${parentReviews.length})` },
+  ];
   const [isSaved, setIsSaved] = useState(false);
   useEffect(() => {
+    if (!signedIn) return;
     getSavedVenues()
       .then((items) => setIsSaved(items.some((item) => item.slug === venueId)))
       .catch(() => {});
-  }, [venueId]);
+  }, [venueId, signedIn]);
 
   const onToggleSave = async () => {
+    if (!signedIn) {
+      showToast('Sign in to save venues');
+      return;
+    }
     try {
       const { saved } = await toggleSavedVenue(venueId);
       setIsSaved(saved);
@@ -368,13 +477,20 @@ export default function VenuePage() {
     );
   }
 
+  const isOffline = venue != null && venue.status != null && !['LIVE', 'PUBLISHED'].includes(venue.status.toUpperCase());
+
   return (
     <>
       <PageTitle title={name} />
       <main className="wrap" style={{ paddingTop: 20 }} id="main">
+        {isOffline && (
+          <Alert tone="warn" icon="⚠️" title="Turf is currently unavailable" style={{ marginBottom: 16 }}>
+            This turf is currently offline or suspended. New bookings are temporarily disabled.
+          </Alert>
+        )}
         {detail.error && detail.error.status !== 404 ? (
           <p className="subtle" role="status" style={{ marginBottom: 10 }}>
-            Live venue data unavailable — showing sample content.{' '}
+            Live venue data unavailable — nothing below is confirmed.{' '}
             <button type="button" onClick={detail.reload} style={{ background: 'none', border: 'none', color: 'var(--brand-600)', cursor: 'pointer', padding: 0, font: 'inherit', fontWeight: 700 }}>
               Retry
             </button>
@@ -383,18 +499,24 @@ export default function VenuePage() {
         <nav className="breadcrumbs" aria-label="Breadcrumb">
           <Link to={paths.player.explore}>Explore</Link>
           <span className="sep">/</span>
-          <Link to={paths.player.explore}>{venue?.area ?? 'Dhanmondi'}</Link>
+          <Link to={paths.player.explore}>{venue?.area ?? '—'}</Link>
           <span className="sep">/</span>
           <span>{name}</span>
         </nav>
 
         {/* ── Gallery ── */}
         <div className="vgallery" aria-label="Venue photos">
-          {GALLERY.map((photo) => (
-            <Photo key={photo.id} variant={photo.variant} />
-          ))}
+          {photoList.length > 0 ? (
+            photoList.slice(0, 4).map((url, idx) => (
+              <Photo key={idx} variant={idx === 0 ? undefined : `alt${idx}`} imgUrl={url} />
+            ))
+          ) : (
+            GALLERY.map((photo) => (
+              <Photo key={photo.id} variant={photo.variant} />
+            ))
+          )}
           <Photo variant="court" className="photo-more">
-            <div className="photo-more-overlay">+9 photos</div>
+            <div className="photo-more-overlay">+{photoList.length > 4 ? photoList.length - 4 : 4} photos</div>
           </Photo>
         </div>
 
@@ -423,7 +545,7 @@ export default function VenuePage() {
                 {metaLine}
               </span>
               <span className="rating">{rating}</span>
-              <span>({reviewCount} reviews)</span>
+              <span>({reviewCount} {reviewCount === 1 ? 'review' : 'reviews'})</span>
             </div>
           </div>
           <div className="row" style={{ gap: 8 }}>
@@ -438,7 +560,20 @@ export default function VenuePage() {
             </IconButton>
             <IconButton
               label="Share venue"
-              onClick={() => showToast('Link copied — share with your team')}
+              onClick={async () => {
+                const result = await shareOrCopy({
+                  title: name,
+                  text: `Book ${name} on TurfChai`,
+                  url: window.location.href,
+                });
+                showToast(
+                  result === 'shared'
+                    ? 'Shared ✓'
+                    : result === 'copied'
+                      ? 'Link copied — share with your team'
+                      : 'Could not copy the link — copy it from the address bar',
+                );
+              }}
             >
               <svg width="17" height="17" viewBox="0 0 24 24" strokeWidth="2" {...svgProps}>
                 <circle cx="18" cy="5" r="3" />
@@ -562,7 +697,7 @@ export default function VenuePage() {
                 aria-labelledby="rules-toggle"
               >
                 <ul className="rules-list">
-                  {RULES.map((rule) => (
+                  {venueRulesList.map((rule) => (
                     <li key={rule}>
                       <svg width="15" height="15" viewBox="0 0 24 24" strokeWidth="2.5" {...svgProps}>
                         <polyline points="20 6 9 17 4 12" />
@@ -570,10 +705,13 @@ export default function VenuePage() {
                       {rule}
                     </li>
                   ))}
+                  {venueRulesList.length === 0 ? (
+                    <li className="subtle">This venue has not published any house rules.</li>
+                  ) : null}
                 </ul>
 
                 <div className="policy-tiers">
-                  {POLICY_TIERS.map((tier) => (
+                  {policyTiers.map((tier) => (
                     <div key={tier.label} className="policy-tier">
                       {tier.icon}
                       <div>
@@ -613,7 +751,7 @@ export default function VenuePage() {
               <span className="rating" style={{ fontSize: 12.5 }}>
                 {rating}
               </span>
-              <span>· {reviewCount} reviews</span>
+              <span>· {reviewCount} {reviewCount === 1 ? 'review' : 'reviews'}</span>
             </div>
 
             <hr />
@@ -645,13 +783,13 @@ export default function VenuePage() {
             </div>
 
             <Button
-              variant="primary"
+              variant={isOffline ? 'tertiary' : 'primary'}
               block
-              to={checkoutHref}
-              onClick={handleBookClick}
-              style={{ minHeight: 44, fontSize: 14 }}
+              to={isOffline ? null : checkoutHref}
+              onClick={isOffline ? (e) => { e.preventDefault(); showToast('Turf is currently offline / unavailable.'); } : handleBookClick}
+              style={{ minHeight: 44, fontSize: 14, opacity: isOffline ? 0.6 : 1 }}
             >
-              Book this slot
+              {isOffline ? 'Turf Currently Offline' : 'Book this slot'}
             </Button>
             {slotWarn && (
               <p
@@ -728,75 +866,93 @@ export default function VenuePage() {
               <span style={{ fontSize: 13, color: 'var(--text-3)' }}>({reviewCount})</span>
             </div>
             <Segmented
-              items={REVIEW_FILTERS}
+              items={reviewFilters}
               value={reviewFilter}
               onChange={setReviewFilter}
               label="Review filter"
             />
           </div>
 
-          <div className="reviews-grid">
-            <div className="review-item">
-              <div className="between" style={{ marginBottom: 12 }}>
-                <div className="row" style={{ gap: 10 }}>
-                  <Avatar size="sm" name="Tanvir Ahmed" initials="TA" />
-                  <div>
-                    <b style={{ fontSize: 14, display: 'block' }}>Tanvir Ahmed</b>
-                    <Badge tone="blue" dot={false} style={{ fontSize: 11, padding: '1.5px 8px' }}>
-                      Verified booking
-                    </Badge>
-                  </div>
-                </div>
-                <Stars value={5} />
-              </div>
-              <p style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>
-                Best turf in Dhanmondi. Grass is genuinely new, floodlights are bright, handover was
-                on time. Shower pressure could be better.
+          {reviewCount === 0 ? (
+            <div className="panel" style={{ textAlign: 'center', padding: '24px 16px', background: 'var(--surface-2)', marginTop: 12 }}>
+              <p style={{ margin: 0, fontSize: 14, color: 'var(--text-3)' }}>
+                No player reviews submitted yet for {name}. Be the first to leave a review after your booking! ⚽
               </p>
-              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                28 Jul 2026 · Surface 5 · Lighting 5 · Cleanliness 4
-              </span>
             </div>
-
-            <div className="review-item">
-              <div className="between" style={{ marginBottom: 12 }}>
-                <div className="row" style={{ gap: 10 }}>
-                  <Avatar size="sm" tone="c" name="Shahana Nasrin" initials="SN" />
-                  <div>
-                    <b style={{ fontSize: 14, display: 'block' }}>Shahana Nasrin</b>
-                    <div style={{ display: 'flex', gap: 5 }}>
-                      <Badge tone="blue" dot={false} style={{ fontSize: 11, padding: '1.5px 8px' }}>
-                        Verified
-                      </Badge>
-                      <Badge tone="gray" dot={false} style={{ fontSize: 11, padding: '1.5px 8px' }}>
-                        Parent
-                      </Badge>
+          ) : reviewsApi.loading ? (
+            <div className="panel" style={{ marginTop: 12 }}>
+              <p className="subtle" role="status" style={{ margin: 0 }}>
+                Loading reviews…
+              </p>
+            </div>
+          ) : reviewsApi.error ? (
+            <div className="panel" style={{ marginTop: 12 }}>
+              <p className="subtle" style={{ margin: 0 }}>
+                {toUserMessage(reviewsApi.error, 'Could not load reviews.')}{' '}
+                <button type="button" className="btn btn-sm btn-tertiary" onClick={reviewsApi.reload}>
+                  Try again
+                </button>
+              </p>
+            </div>
+          ) : reviewItems.length === 0 ? (
+            <div className="panel" style={{ textAlign: 'center', padding: '24px 16px', background: 'var(--surface-2)', marginTop: 12 }}>
+              <p style={{ margin: 0, fontSize: 14, color: 'var(--text-3)' }}>
+                No published reviews to show yet.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="reviews-grid">
+                {reviewItems.map((review) => (
+                  <div className="review-item" key={review.id}>
+                    <div className="between" style={{ marginBottom: 12 }}>
+                      <div className="row" style={{ gap: 10 }}>
+                        <Avatar size="sm" name={review.authorName} initials={review.authorInitials} />
+                        <div>
+                          <b style={{ fontSize: 14, display: 'block' }}>{review.authorName}</b>
+                          <Badge tone="blue" dot={false} style={{ fontSize: 11, padding: '1.5px 8px' }}>
+                            Verified booking
+                          </Badge>
+                        </div>
+                      </div>
+                      <Stars value={review.overallRating ?? 0} />
                     </div>
+                    {review.comment ? (
+                      <p style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>{review.comment}</p>
+                    ) : null}
+                    <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                      {review.createdAt ? new Date(review.createdAt).toLocaleDateString() : 'Verified player review'}
+                    </span>
+                    {review.ownerResponse ? (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          paddingLeft: 10,
+                          borderLeft: '3px solid var(--brand)',
+                        }}
+                      >
+                        <b style={{ fontSize: 11, color: 'var(--brand-600)' }}>RESPONSE FROM THE VENUE</b>
+                        <p style={{ fontSize: 13, color: 'var(--text-2)', margin: '2px 0 0' }}>
+                          {review.ownerResponse}
+                        </p>
+                      </div>
+                    ) : null}
                   </div>
-                </div>
-                <Stars value={4} />
+                ))}
               </div>
-              <p style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>
-                Brought my 11-year-old&apos;s team here. Staff were patient, seating for parents,
-                pitch edges padded. Parking fills up by 5 PM.
-              </p>
-              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                21 Jul 2026 · Safety 5 · Youth-friendliness 5
-              </span>
-              <div className="panel" style={{ marginTop: 12, background: 'var(--surface)' }}>
-                <b style={{ fontSize: 12, display: 'block', marginBottom: 2 }}>
-                  Kick Off Arena replied
-                </b>
-                <p style={{ fontSize: 12, color: 'var(--text-3)', margin: 0 }}>
-                  Thank you Shahana! Weekend mornings have the most parking — see you again.
-                </p>
-              </div>
-            </div>
-          </div>
 
-          <Button size="sm" style={{ marginTop: 12 }} onClick={() => showToast('Loading all reviews…')}>
-            Show all {reviewCount} reviews
-          </Button>
+              {reviewsApi.data?.hasMore ? (
+                <Button
+                  size="sm"
+                  style={{ marginTop: 12 }}
+                  disabled={reviewsApi.loading}
+                  onClick={() => setReviewPageSize((size) => size + 10)}
+                >
+                  Show more reviews
+                </Button>
+              ) : null}
+            </>
+          )}
         </section>
 
         {/* Similar venues */}

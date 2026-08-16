@@ -64,7 +64,9 @@ public class Tournament {
     @Column(name = "time_window_end", nullable = false)
     private LocalTime windowEnd;
 
-    /** '5_A_SIDE' | '6_A_SIDE' | '7_A_SIDE' | 'KNOCKOUT' (baseline CHECK values). */
+    /**
+     * '5_A_SIDE' | '6_A_SIDE' | '7_A_SIDE' | 'KNOCKOUT' (baseline CHECK values).
+     */
     @Column(nullable = false, length = 20)
     private String format;
 
@@ -91,7 +93,47 @@ public class Tournament {
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal depositAmount = BigDecimal.ZERO;
 
+    /** 'UNPAID' | 'PAID'. */
+    @Column(name = "deposit_status", nullable = false, length = 15)
+    private String depositStatus = "UNPAID";
+
+    @Column(name = "deposit_paid_at")
+    private Instant depositPaidAt;
+
+    @Column(name = "deposit_method", length = 30)
+    private String depositMethod;
+
+    /** Payment-gateway reference; the balance receipt is reconciled against it. */
+    @Column(name = "deposit_reference", length = 60)
+    private String depositReference;
+
+    /**
+     * Weeks the reserved slot pattern repeats, counting the tournament date itself.
+     */
+    @Column(name = "repeat_weeks", nullable = false)
+    private int repeatWeeks = 1;
+
     private LocalDate balanceDueDate;
+
+    /** UNPAID until the host settles the remainder after the deposit. */
+    @Column(name = "balance_status", nullable = false, length = 15)
+    private String balanceStatus = "UNPAID";
+
+    @Column(name = "balance_paid_at")
+    private Instant balancePaidAt;
+
+    @Column(name = "balance_amount", precision = 12, scale = 2)
+    private BigDecimal balanceAmount;
+
+    @Column(name = "balance_method", length = 30)
+    private String balanceMethod;
+
+    @Column(name = "balance_reference", length = 60)
+    private String balanceReference;
+
+    /** Free-text event-day notes, private to the host. */
+    @Column(name = "host_notes", length = 2000)
+    private String hostNotes;
 
     @Column(nullable = false)
     private Instant createdAt = Instant.now();

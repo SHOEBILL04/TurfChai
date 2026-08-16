@@ -77,6 +77,10 @@ public class User {
     @Column(name = "area", length = 100)
     private String area;
 
+    /** Acquisition channel / registration source, e.g. "Organic Search". */
+    @Column(name = "signup_channel", length = 40)
+    private String signupChannel;
+
     @Column(name = "avatar_url")
     private String avatarUrl;
 
@@ -118,6 +122,9 @@ public class User {
 
     @Column(name = "preferred_times_csv")
     private String preferredTimes;
+
+    @Column(name = "preferred_position", length = 50)
+    private String preferredPosition;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     @Builder.Default

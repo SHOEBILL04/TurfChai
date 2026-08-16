@@ -10,12 +10,17 @@ import com.turfchai.tournament.repository.TournamentPitchReservationRepository;
 import com.turfchai.tournament.repository.TournamentRepository;
 import com.turfchai.tournament.repository.TournamentTeamRepository;
 import com.turfchai.tournament.service.TournamentRequests.CreateTournamentRequest;
+import com.turfchai.tournament.service.TournamentRequests.PayBalanceRequest;
+import com.turfchai.tournament.service.TournamentRequests.PayDepositRequest;
 import com.turfchai.tournament.service.TournamentRequests.RegisterPlayerRequest;
 import com.turfchai.tournament.service.TournamentRequests.RegisterTeamRequest;
 import com.turfchai.tournament.service.TournamentRequests.ReserveSlotsRequest;
 import com.turfchai.tournament.service.TournamentRequests.SlotRequest;
+import com.turfchai.tournament.service.TournamentRequests.UpdateTournamentSettingsRequest;
 import com.turfchai.tournament.service.TournamentViews.CostSummary;
+import com.turfchai.tournament.service.TournamentViews.DepositView;
 import com.turfchai.tournament.service.TournamentViews.FixtureView;
+import com.turfchai.tournament.service.TournamentViews.ReservationQuote;
 import com.turfchai.tournament.service.TournamentViews.ReservationView;
 import com.turfchai.tournament.service.TournamentViews.TeamView;
 import com.turfchai.tournament.service.TournamentViews.TournamentCard;
@@ -34,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,6 +58,9 @@ public class TournamentService {
     static final BigDecimal BUNDLE_DISCOUNT_RATE = new BigDecimal("0.04");
     static final BigDecimal DEPOSIT_RATE = new BigDecimal("0.40");
 
+    /** Upper bound on weekly recurrence — matches the request-level @Max. */
+    public static final int MAX_REPEAT_WEEKS = 26;
+
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final TournamentRepository tournaments;
@@ -60,19 +69,22 @@ public class TournamentService {
     private final TournamentPitchReservationRepository reservations;
     private final VenueRepository venues;
     private final PitchRepository pitches;
+    private final com.turfchai.service.NotificationService notifications;
 
     public TournamentService(TournamentRepository tournaments,
-                             TournamentTeamRepository teams,
-                             TournamentFixtureRepository fixtures,
-                             TournamentPitchReservationRepository reservations,
-                             VenueRepository venues,
-                             PitchRepository pitches) {
+            TournamentTeamRepository teams,
+            TournamentFixtureRepository fixtures,
+            TournamentPitchReservationRepository reservations,
+            VenueRepository venues,
+            PitchRepository pitches,
+            com.turfchai.service.NotificationService notifications) {
         this.tournaments = tournaments;
         this.teams = teams;
         this.fixtures = fixtures;
         this.reservations = reservations;
         this.venues = venues;
         this.pitches = pitches;
+        this.notifications = notifications;
     }
 
     // ------------------------------------------------------------------
@@ -109,6 +121,35 @@ public class TournamentService {
     @Transactional(readOnly = true)
     public TournamentView get(String code) {
         return toView(require(code));
+    }
+
+    /**
+     * Every tournament the caller hosts.
+     *
+     * <p>
+     * Without this a host workspace has no way to find its own tournaments,
+     * so the UI fell back to a hardcoded demo code and every other host was
+     * refused with 403 on a page that retried forever.
+     */
+    @Transactional(readOnly = true)
+    public List<TournamentView> listHostedBy(User host) {
+        return tournaments.findByHostIdOrderByTournamentDateDesc(host.getId())
+                .stream()
+                .map(this::toView)
+                .toList();
+    }
+
+    /**
+     * Fails unless {@code user} is the host of {@code code}. Host tournament
+     * operations are otherwise reachable by anyone who learns a code.
+     */
+    @Transactional(readOnly = true)
+    public void assertHost(String code, User user) {
+        Tournament tournament = require(code);
+        Long hostId = tournament.getHost() != null ? tournament.getHost().getId() : null;
+        if (hostId == null || user == null || !hostId.equals(user.getId())) {
+            throw new SecurityException("You are not the host of this tournament");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -151,6 +192,13 @@ public class TournamentService {
                 .orElseThrow(() -> new TournamentNotFoundException("No team " + teamId + " in " + code));
         team.setEntryFeeStatus("PAID");
         team.setEntryFeePaid(t.getEntryFeePerTeam());
+        if (team.getRegisteredBy() != null) {
+            notifications.sendOnce(team.getRegisteredBy().getId(), "TOURNAMENT_UPDATE",
+                    "Entry fee received · " + t.getName(),
+                    "৳" + t.getEntryFeePerTeam().stripTrailingZeros().toPlainString()
+                            + " is recorded as paid for " + team.getName() + ". Your place is secured.",
+                    "/player/tournaments/" + t.getCode());
+        }
         return toView(team);
     }
 
@@ -161,7 +209,7 @@ public class TournamentService {
     /** Published/confirmed tournaments a player can discover. */
     @Transactional(readOnly = true)
     public PagedResponse<TournamentCard> browse(boolean openOnly, boolean upcomingOnly,
-                                                User viewer, int page, int size) {
+            User viewer, int page, int size) {
         Page<Tournament> results = tournaments.browse(
                 openOnly, upcomingOnly ? LocalDate.now() : null, PageRequest.of(page, size));
         List<TournamentCard> items = results.getContent().stream()
@@ -193,6 +241,14 @@ public class TournamentService {
         if (teams.countByTournamentId(t.getId()) >= t.getTeamCapacity()) {
             throw new TournamentConflictException("Tournament is full (" + t.getTeamCapacity() + " teams)");
         }
+        // One entry per player. The read side already assumes this — `withdraw`,
+        // `myTournaments` and the card's `myRegistrationCode` all resolve a
+        // player to a single team — so a second registration produced a state
+        // the player could never leave: withdraw removed the earliest entry, and
+        // once that one was paid it refused outright with the other still live.
+        if (teams.existsByTournamentIdAndRegisteredById(t.getId(), player.getId())) {
+            throw new TournamentConflictException("You have already registered a team for " + code);
+        }
         String teamName = request.teamName().trim();
         if (teams.existsByTournamentIdAndNameIgnoreCase(t.getId(), teamName)) {
             throw new TournamentConflictException("A team named '" + teamName + "' is already registered");
@@ -202,18 +258,28 @@ public class TournamentService {
         team.setTournament(t);
         team.setName(teamName);
         team.setCaptainName(request.captainName() == null || request.captainName().isBlank()
-                ? player.getFullName() : request.captainName().trim());
+                ? player.getFullName()
+                : request.captainName().trim());
         team.setRegisteredBy(player);
         team.setContactPhone(request.contactPhone() == null || request.contactPhone().isBlank()
-                ? player.getPhone() : request.contactPhone().trim());
+                ? player.getPhone()
+                : request.contactPhone().trim());
         team.setEmergencyContact(request.emergencyContact());
         team.setJerseyNumber(request.jerseyNumber());
         team.setSkillLevel(request.skillLevel() == null || request.skillLevel().isBlank()
-                ? null : request.skillLevel());
+                ? null
+                : request.skillLevel());
         team.setMedicalNotes(request.medicalNotes());
         team.setRegistrationCode(nextRegistrationCode());
         try {
-            return toView(teams.saveAndFlush(team));
+            TeamView view = toView(teams.saveAndFlush(team));
+            notifications.sendOnce(player.getId(), "TOURNAMENT_REGISTERED",
+                    "Registered for " + t.getName(),
+                    team.getName() + " is entered for " + t.getTournamentDate() + ". Entry fee ৳"
+                            + t.getEntryFeePerTeam().stripTrailingZeros().toPlainString()
+                            + " is due — your place is held until it is paid.",
+                    "/player/tournaments/" + t.getCode());
+            return view;
         } catch (DataIntegrityViolationException e) {
             throw new TournamentConflictException("A team named '" + teamName + "' is already registered");
         }
@@ -241,9 +307,10 @@ public class TournamentService {
 
     private TournamentCard toCard(Tournament t, User viewer) {
         List<TournamentTeam> registered = teams.findByTournamentIdOrderByJoinedAtAsc(t.getId());
-        TournamentTeam mine = viewer == null ? null : registered.stream()
-                .filter(x -> x.getRegisteredBy() != null && x.getRegisteredBy().getId().equals(viewer.getId()))
-                .findFirst().orElse(null);
+        TournamentTeam mine = viewer == null ? null
+                : registered.stream()
+                        .filter(x -> x.getRegisteredBy() != null && x.getRegisteredBy().getId().equals(viewer.getId()))
+                        .findFirst().orElse(null);
         return new TournamentCard(t.getCode(), t.getName(), t.getVenue().getSlug(), t.getVenue().getName(),
                 t.getTournamentDate(), t.getWindowStart(), t.getWindowEnd(),
                 t.getFormat(), t.getPrivacy(), t.getStatus(),
@@ -292,31 +359,9 @@ public class TournamentService {
             }
         }
 
-        for (SlotRequest slot : slots) {
-            // Pessimistic lock: serializes concurrent reservations per pitch.
-            Pitch pitch = pitches.findByIdForUpdate(slot.pitchId())
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown pitch: " + slot.pitchId()));
-            if (!pitch.getVenue().getId().equals(t.getVenue().getId())) {
-                throw new IllegalArgumentException(
-                        "Pitch " + slot.pitchId() + " does not belong to venue " + t.getVenue().getSlug());
-            }
-            List<TournamentPitchReservation> clashes = reservations.findOverlapping(
-                    pitch.getId(), t.getTournamentDate(), slot.startTime(), slot.endTime());
-            if (!clashes.isEmpty()) {
-                TournamentPitchReservation clash = clashes.get(0);
-                throw new PitchConflictException(
-                        "Pitch '" + pitch.getName() + "' is already reserved "
-                                + clash.getStartTime() + "-" + clash.getEndTime()
-                                + " on " + t.getTournamentDate());
-            }
-            TournamentPitchReservation r = new TournamentPitchReservation();
-            r.setTournament(t);
-            r.setPitch(pitch);
-            r.setSlotDate(t.getTournamentDate());
-            r.setStartTime(slot.startTime());
-            r.setEndTime(slot.endTime());
-            r.setPrice(slotPrice(t, pitch, slot.startTime(), slot.endTime()));
-            reservations.save(r);
+        int weeks = request.weeks();
+        for (int week = 0; week < weeks; week++) {
+            reserveWeek(t, slots, t.getTournamentDate().plusWeeks(week));
         }
         try {
             reservations.flush();
@@ -325,8 +370,193 @@ public class TournamentService {
             throw new PitchConflictException("One of the requested slots was just taken");
         }
         t.setStatus("CONFIRMED");
+        t.setRepeatWeeks(Math.max(t.getRepeatWeeks(), weeks));
         t.setDepositAmount(costSummary(t).deposit());
         return toView(t);
+    }
+
+    /**
+     * Persists one week's copy of the slot pattern. Any clash rejects the batch.
+     */
+    private void reserveWeek(Tournament t, List<SlotRequest> slots, LocalDate date) {
+        for (SlotRequest slot : slots) {
+            Pitch pitch = lockPitch(t, slot.pitchId());
+            rejectIfClashing(pitch, date, slot.startTime(), slot.endTime());
+            save(t, pitch, date, slot.startTime(), slot.endTime(),
+                    slotPrice(t, pitch, slot.startTime(), slot.endTime()));
+        }
+    }
+
+    /**
+     * Repeats an existing week, carrying its prices across rather than
+     * re-deriving them. The quote the host accepted is built from these same
+     * stored prices, so copying them is what keeps the amount charged equal to
+     * the amount shown.
+     */
+    private void cloneWeek(Tournament t, List<TournamentPitchReservation> pattern, LocalDate date) {
+        for (TournamentPitchReservation source : pattern) {
+            Pitch pitch = lockPitch(t, source.getPitch().getId());
+            rejectIfClashing(pitch, date, source.getStartTime(), source.getEndTime());
+            save(t, pitch, date, source.getStartTime(), source.getEndTime(), source.getPrice());
+        }
+    }
+
+    /** Pessimistic lock: serializes concurrent reservations per pitch. */
+    private Pitch lockPitch(Tournament t, Long pitchId) {
+        Pitch pitch = pitches.findByIdForUpdate(pitchId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown pitch: " + pitchId));
+        if (!pitch.getVenue().getId().equals(t.getVenue().getId())) {
+            throw new IllegalArgumentException(
+                    "Pitch " + pitchId + " does not belong to venue " + t.getVenue().getSlug());
+        }
+        return pitch;
+    }
+
+    private void rejectIfClashing(Pitch pitch, LocalDate date,
+            java.time.LocalTime start, java.time.LocalTime end) {
+        List<TournamentPitchReservation> clashes = reservations.findOverlapping(
+                pitch.getId(), date, start, end);
+        if (!clashes.isEmpty()) {
+            TournamentPitchReservation clash = clashes.get(0);
+            throw new PitchConflictException(
+                    "Pitch '" + pitch.getName() + "' is already reserved "
+                            + clash.getStartTime() + "-" + clash.getEndTime()
+                            + " on " + date);
+        }
+    }
+
+    private void save(Tournament t, Pitch pitch, LocalDate date,
+            java.time.LocalTime start, java.time.LocalTime end, BigDecimal price) {
+        TournamentPitchReservation r = new TournamentPitchReservation();
+        r.setTournament(t);
+        r.setPitch(pitch);
+        r.setSlotDate(date);
+        r.setStartTime(start);
+        r.setEndTime(end);
+        r.setPrice(price);
+        reservations.save(r);
+    }
+
+    /**
+     * Prices the tournament's slot pattern repeated over {@code repeatWeeks}
+     * without writing anything, so the reserve screen can show a live total as
+     * the host changes the recurrence.
+     */
+    @Transactional(readOnly = true)
+    public ReservationQuote quoteRecurring(String code, int repeatWeeks) {
+        if (repeatWeeks < 1 || repeatWeeks > MAX_REPEAT_WEEKS) {
+            throw new IllegalArgumentException("repeatWeeks must be between 1 and " + MAX_REPEAT_WEEKS);
+        }
+        Tournament t = require(code);
+        List<TournamentPitchReservation> first = weekOneReservations(t);
+        BigDecimal weekly = first.stream().map(TournamentPitchReservation::getPrice)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        LocalDate last = t.getTournamentDate().plusWeeks(repeatWeeks - 1L);
+        return new ReservationQuote(repeatWeeks, first.size(), weekly,
+                t.getTournamentDate(), last,
+                summarize(first.size() * repeatWeeks, weekly.multiply(BigDecimal.valueOf(repeatWeeks))));
+    }
+
+    /**
+     * Confirms the bulk reservation and records the deposit. Extending the
+     * recurrence and taking payment happen in one transaction: a clash on a
+     * later week must not leave the host charged for slots they do not hold.
+     *
+     * <p>
+     * The charged amount is recomputed here rather than taken from the
+     * request, so the client cannot name its own price.
+     */
+    @Transactional
+    public TournamentView payDeposit(String code, PayDepositRequest request) {
+        Tournament t = require(code);
+        if ("PAID".equals(t.getDepositStatus())) {
+            throw new TournamentConflictException("Deposit for " + code + " has already been paid");
+        }
+        List<TournamentPitchReservation> first = weekOneReservations(t);
+        if (first.isEmpty()) {
+            throw new IllegalArgumentException("Reserve at least one pitch slot before paying the deposit");
+        }
+
+        int weeks = request.weeks();
+        for (int week = t.getRepeatWeeks(); week < weeks; week++) {
+            cloneWeek(t, first, t.getTournamentDate().plusWeeks(week));
+        }
+        try {
+            reservations.flush();
+        } catch (DataIntegrityViolationException e) {
+            throw new PitchConflictException("One of the recurring slots was just taken");
+        }
+
+        CostSummary costs = costSummary(t);
+        t.setRepeatWeeks(Math.max(t.getRepeatWeeks(), weeks));
+        t.setDepositAmount(costs.deposit());
+        t.setDepositStatus("PAID");
+        t.setDepositMethod(request.method());
+        t.setDepositReference(request.payerReference() == null || request.payerReference().isBlank()
+                ? "DEP-" + t.getCode() + "-" + randomDigits(6)
+                : request.payerReference().trim());
+        t.setDepositPaidAt(Instant.now());
+        t.setStatus("CONFIRMED");
+        return toView(t);
+    }
+
+    /**
+     * Settles the remainder after the deposit. The charged amount is recomputed
+     * from the reservations actually held, never taken from the request.
+     */
+    @Transactional
+    public TournamentView payBalance(String code, PayBalanceRequest request) {
+        Tournament t = require(code);
+        if (!"PAID".equals(t.getDepositStatus())) {
+            throw new TournamentConflictException("Pay the deposit for " + code + " before settling the balance");
+        }
+        if ("PAID".equals(t.getBalanceStatus())) {
+            throw new TournamentConflictException("The balance for " + code + " has already been paid");
+        }
+
+        CostSummary costs = costSummary(t);
+        t.setBalanceAmount(costs.balance());
+        t.setBalanceStatus("PAID");
+        t.setBalanceMethod(request.method());
+        t.setBalanceReference(request.payerReference() == null || request.payerReference().isBlank()
+                ? "BAL-" + t.getCode() + "-" + randomDigits(6)
+                : request.payerReference().trim());
+        t.setBalancePaidAt(Instant.now());
+        return toView(t);
+    }
+
+    /**
+     * Applies the host's privacy and event-day-note changes. Absent fields are left
+     * alone.
+     */
+    @Transactional
+    public TournamentView updateSettings(String code, UpdateTournamentSettingsRequest request) {
+        Tournament t = require(code);
+        if (request.privacy() != null && !request.privacy().isBlank()) {
+            t.setPrivacy("invite_only".equals(request.privacy()) ? "INVITE_ONLY" : "OPEN");
+        }
+        if (request.hostNotes() != null) {
+            String notes = request.hostNotes().trim();
+            t.setHostNotes(notes.isEmpty() ? null : notes);
+        }
+        return toView(t);
+    }
+
+    /**
+     * Issues a fresh invite code, which immediately invalidates the previous link.
+     */
+    @Transactional
+    public TournamentView regenerateInviteCode(String code) {
+        Tournament t = require(code);
+        t.setInviteCode("t/" + slugify(t.getName()) + "-" + randomDigits(4));
+        return toView(t);
+    }
+
+    /** The slots on the tournament date itself — the pattern later weeks repeat. */
+    private List<TournamentPitchReservation> weekOneReservations(Tournament t) {
+        return reservations.findByTournamentIdOrderBySlotDateAscStartTimeAsc(t.getId()).stream()
+                .filter(r -> t.getTournamentDate().equals(r.getSlotDate()))
+                .toList();
     }
 
     /**
@@ -489,12 +719,20 @@ public class TournamentService {
                 .findByTournamentIdOrderBySlotDateAscStartTimeAsc(t.getId());
         BigDecimal slotTotal = rs.stream().map(TournamentPitchReservation::getPrice)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal discount = rs.size() >= BUNDLE_DISCOUNT_MIN_SLOTS
+        return summarize(rs.size(), slotTotal);
+    }
+
+    /**
+     * The single place the bundle discount, deposit and balance are derived,
+     * so a quote and the amount actually charged can never drift apart.
+     */
+    static CostSummary summarize(int slotCount, BigDecimal slotTotal) {
+        BigDecimal discount = slotCount >= BUNDLE_DISCOUNT_MIN_SLOTS
                 ? slotTotal.multiply(BUNDLE_DISCOUNT_RATE).setScale(0, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
         BigDecimal total = slotTotal.subtract(discount);
         BigDecimal deposit = total.multiply(DEPOSIT_RATE).setScale(0, RoundingMode.HALF_UP);
-        return new CostSummary(rs.size(), slotTotal, discount, total, deposit, total.subtract(deposit));
+        return new CostSummary(slotCount, slotTotal, discount, total, deposit, total.subtract(deposit));
     }
 
     private TournamentView toView(Tournament t) {
@@ -514,8 +752,36 @@ public class TournamentService {
                 t.getTournamentDate(), t.getWindowStart(), t.getWindowEnd(),
                 t.getFormat(), t.getTeamCapacity(), t.getEntryFeePerTeam(),
                 t.getPrizePool(), t.getPrivacy(), t.getInviteCode(),
-                t.getStatus(), t.getBalanceDueDate(),
-                teamViews, fixtureViews, reservationViews, costSummary(t));
+                t.getStatus(), t.getBalanceDueDate(), t.getRepeatWeeks(),
+                teamViews, fixtureViews, reservationViews, costSummary(t),
+                new DepositView(t.getDepositStatus(), t.getDepositAmount(),
+                        t.getDepositMethod(), t.getDepositReference(), t.getDepositPaidAt()),
+                new DepositView(t.getBalanceStatus(), t.getBalanceAmount(),
+                        t.getBalanceMethod(), t.getBalanceReference(), t.getBalancePaidAt()),
+                t.getHostNotes(),
+                venueContactOf(t));
+    }
+
+    /**
+     * The venue owner's contact card, or null when the venue has no owner on file.
+     */
+    private TournamentViews.VenueContactView venueContactOf(Tournament t) {
+        com.turfchai.model.User owner = t.getVenue() != null ? t.getVenue().getOwner() : null;
+        if (owner == null) {
+            return null;
+        }
+        String name = owner.getFullName() != null && !owner.getFullName().isBlank()
+                ? owner.getFullName()
+                : "Venue owner";
+        return new TournamentViews.VenueContactView(name, initialsOf(name), owner.getPhone(), owner.getEmail());
+    }
+
+    private static String initialsOf(String name) {
+        String[] parts = name.trim().split("\\s+");
+        if (parts.length == 1) {
+            return parts[0].substring(0, Math.min(2, parts[0].length())).toUpperCase();
+        }
+        return ("" + parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
     }
 
     private TeamView toView(TournamentTeam x) {

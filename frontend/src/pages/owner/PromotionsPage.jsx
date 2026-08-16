@@ -1,39 +1,155 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/buttons/Button';
-import { Chip } from '@/components/ui/Chip';
 import { Field, Input, Select } from '@/components/forms/Field';
 import { Overlay } from '@/components/modals/Overlay';
 import { PageTitle } from '@/components/common/PageTitle';
 import { useDisclosure } from '@/hooks/useDisclosure';
-import { useFilterChips } from '@/hooks/useFilterChips';
 import { useToast } from '@/hooks/useToast';
 import { paths } from '@/routes/paths';
 
-const OFFPEAK_STATS = [
-  { id: 'bookings', value: '42', label: 'bookings' },
-  { id: 'revenue', value: '৳64,700', label: 'revenue' },
-  { id: 'lift', value: '+31%', label: 'occupancy lift' },
-];
-
-const TYPE_CHIPS = ['Off-peak discount', 'Repeat-customer reward', 'Limited-time deal', 'Venue loyalty'];
-const DAY_CHIPS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const PITCH_CHIPS = ['All pitches', 'Pitch 1', 'Pitch 2', 'Pitch 3'];
+import { useApi } from '@/hooks/useApi';
+import { getOwnerPromotions, createPromotion, deletePromotion, updatePromotion } from '@/api/ownerPromotions';
+import { listMyVenues } from '@/api/ownerVenues';
+import { toUserMessage } from '@/utils/errorMessage';
 
 export default function PromotionsPage() {
   const { showToast } = useToast();
   const drawer = useDisclosure(false);
 
-  const typeChips = useFilterChips(['Off-peak discount']);
-  const dayChips = useFilterChips(['Mon', 'Tue', 'Wed', 'Thu']);
-  const pitchChips = useFilterChips(['All pitches']);
+  const [code, setCode] = useState('');
+  const [label, setLabel] = useState('');
+  const [discountType, setDiscountType] = useState('PERCENT');
+  const [discountValue, setDiscountValue] = useState('');
+  const [usageLimit, setUsageLimit] = useState('');
+  const [validFrom, setValidFrom] = useState('');
+  const [validUntil, setValidUntil] = useState('');
 
-  const [name, setName] = useState('Weekday Off-Peak −30%');
-  const [discountUnit, setDiscountUnit] = useState('%');
-  const [discountAmount, setDiscountAmount] = useState('30');
-  const [cap, setCap] = useState('');
-  const [fromTime, setFromTime] = useState('12:00 PM');
-  const [toTime, setToTime] = useState('5:00 PM');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  /** Set while the drawer is editing an existing promotion rather than creating one. */
+  const [editingId, setEditingId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+
+  const { data: venuesRes } = useApi(listMyVenues, []);
+  const venues = Array.isArray(venuesRes) ? venuesRes : (Array.isArray(venuesRes?.data) ? venuesRes.data : []);
+  const activeVenueId = Array.isArray(venues) && venues.length > 0 ? venues[0]?.id : null;
+
+  const getPromosCb = useCallback(() => {
+    if (!activeVenueId) return Promise.resolve([]);
+    return getOwnerPromotions(activeVenueId);
+  }, [activeVenueId]);
+
+  const { data: res, loading, reload } = useApi(getPromosCb, [activeVenueId]);
+  const promotions = Array.isArray(res) ? res : (Array.isArray(res?.data) ? res.data : []);
+
+  const handleLaunch = async () => {
+    if (!activeVenueId) return;
+
+    if (!code || !label || !discountValue) {
+      showToast('Please fill out all required fields');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      const payload = {
+        label,
+        discountType,
+        discountValue: Number(discountValue),
+        usageLimit: usageLimit ? Number(usageLimit) : null,
+        validFrom: validFrom ? new Date(validFrom).toISOString() : null,
+        validUntil: validUntil ? new Date(validUntil).toISOString() : null,
+      };
+      if (editingId) {
+        // The code is printed on campaigns, so the server does not allow it to move.
+        await updatePromotion(activeVenueId, editingId, payload);
+        showToast('Promotion updated ✓');
+      } else {
+        await createPromotion(activeVenueId, { code, ...payload });
+        showToast('Promotion live — discounted slots now shown to players ✓');
+      }
+      drawer.close();
+      resetForm();
+      reload();
+    } catch (err) {
+      showToast(toUserMessage(err, editingId ? 'Failed to update promotion' : 'Failed to create promotion'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setCode('');
+    setLabel('');
+    setDiscountType('PERCENT');
+    setDiscountValue('');
+    setUsageLimit('');
+    setValidFrom('');
+    setValidUntil('');
+  };
+
+  /** Datetime-local wants 'YYYY-MM-DDTHH:mm'; the API returns an ISO instant. */
+  const toLocalInput = (iso) => (iso ? new Date(iso).toISOString().slice(0, 16) : '');
+
+  const openCreate = () => {
+    resetForm();
+    drawer.open();
+  };
+
+  const openEdit = (promo) => {
+    setEditingId(promo.id);
+    setCode(promo.code ?? '');
+    setLabel(promo.label ?? '');
+    setDiscountType(promo.discountType ?? 'PERCENT');
+    setDiscountValue(String(promo.discountValue ?? ''));
+    setUsageLimit(promo.usageLimit != null ? String(promo.usageLimit) : '');
+    setValidFrom(toLocalInput(promo.validFrom));
+    setValidUntil(toLocalInput(promo.validUntil));
+    drawer.open();
+  };
+
+  const togglePaused = async (promo) => {
+    if (!activeVenueId || busyId) return;
+    setBusyId(promo.id);
+    try {
+      await updatePromotion(activeVenueId, promo.id, { active: !promo.active });
+    } catch (err) {
+      showToast(toUserMessage(err, 'Could not update this promotion.'));
+      return;
+    } finally {
+      setBusyId(null);
+    }
+    reload();
+    showToast(promo.active ? 'Promotion paused — the code no longer applies' : 'Promotion resumed ✓');
+  };
+
+  const handleDelete = async (promoId) => {
+    if (!activeVenueId) return;
+    if (!confirm('Are you sure you want to delete this promotion?')) return;
+    
+    try {
+      await deletePromotion(activeVenueId, promoId);
+      showToast('Promotion deleted ✓');
+      reload();
+    } catch (err) {
+      const msg = err.message || 'Failed to delete promotion';
+      showToast(`Error: ${msg}`);
+    }
+  };
+
+  const getRemainingDays = (validUntil) => {
+    if (!validUntil) return 'No expiry';
+    const diff = new Date(validUntil).getTime() - new Date().getTime();
+    if (diff <= 0) return 'Expired';
+    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    return `${days} days`;
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  };
 
   return (
     <>
@@ -44,117 +160,120 @@ export default function PromotionsPage() {
           <h1>Promotions</h1>
           <span className="subtle small">Fill empty slots and reward loyal teams</span>
         </div>
-        <Button variant="primary" onClick={drawer.open}>
+        <Button variant="primary" onClick={openCreate}>
           + New promotion
         </Button>
       </div>
 
       <div className="grid2" style={{ alignItems: 'start' }}>
         <div className="stack">
-          <div className="card" style={{ borderLeft: '3px solid var(--brand)' }}>
-            <div className="between">
-              <h3 style={{ margin: 0 }}>Weekday Off-Peak −30%</h3>
-              <Badge tone="green">Active</Badge>
-            </div>
-            <p className="subtle small" style={{ margin: '4px 0 10px' }}>
-              Mon–Thu · 12:00–5:00 PM · all pitches · ৳2,200 → <b className="num">৳1,540</b>
-            </p>
-            <div className="grid3" style={{ gap: 8 }}>
-              {OFFPEAK_STATS.map((stat) => (
-                <div className="panel center" key={stat.id}>
-                  <b className="num">{stat.value}</b>
-                  <div className="tiny subtle">{stat.label}</div>
+          {promotions.map((promo) => (
+            <div className="card" key={promo.id} style={{ borderLeft: `3px solid ${promo.active ? 'var(--brand)' : 'var(--muted)'}` }}>
+              <div className="between">
+                <h3 style={{ margin: 0 }}>{promo.label}</h3>
+                <Badge tone={promo.active ? 'green' : 'gray'}>{promo.active ? 'Active' : 'Paused'}</Badge>
+              </div>
+              <p className="subtle small" style={{ margin: '4px 0 10px' }}>
+                Code: <strong>{promo.code}</strong>
+              </p>
+              
+              <div className="grid3" style={{ gap: 8 }}>
+                <div className="panel center">
+                  <b className="num">
+                    {promo.discountType === 'PERCENT' ? `${promo.discountValue}%` : `৳${promo.discountValue}`}
+                  </b>
+                  <div className="tiny subtle">Discount</div>
                 </div>
-              ))}
-            </div>
-            <div className="row" style={{ marginTop: 10 }}>
-              <Button size="sm" onClick={drawer.open}>
-                Edit
-              </Button>
-              <Button size="sm" variant="tertiary" onClick={() => showToast('Promotion paused ⏸️')}>
-                Pause
-              </Button>
-            </div>
-          </div>
+                <div className="panel center">
+                  <b className="num">{promo.usageCount}</b>
+                  <div className="tiny subtle">Times used</div>
+                </div>
+                <div className="panel center">
+                  <b className="num">{promo.usageLimit ? promo.usageLimit : '∞'}</b>
+                  <div className="tiny subtle">Usage limit</div>
+                </div>
+              </div>
 
-          <div className="card" style={{ borderLeft: '3px solid var(--brand)' }}>
-            <div className="between">
-              <h3 style={{ margin: 0 }}>Every 10th booking −20%</h3>
-              <Badge tone="green">Active · venue loyalty</Badge>
+              <div className="grid3" style={{ gap: 8, marginTop: 8 }}>
+                <div className="panel center">
+                  <b className="small" style={{ fontSize: '0.85em' }}>{formatDate(promo.validFrom)}</b>
+                  <div className="tiny subtle">Start Date</div>
+                </div>
+                <div className="panel center">
+                  <b className="small" style={{ fontSize: '0.85em' }}>{formatDate(promo.validUntil)}</b>
+                  <div className="tiny subtle">End Date</div>
+                </div>
+                <div className="panel center">
+                  <b className="small" style={{ fontSize: '0.85em' }}>{getRemainingDays(promo.validUntil)}</b>
+                  <div className="tiny subtle">Remaining</div>
+                </div>
+              </div>
+              
+              <div className="row" style={{ marginTop: 10, gap: 8 }}>
+                <Button size="sm" variant="secondary" onClick={() => openEdit(promo)}>
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant={promo.active ? 'secondary' : 'primary'}
+                  disabled={busyId === promo.id}
+                  onClick={() => togglePaused(promo)}
+                >
+                  {busyId === promo.id ? 'Saving…' : promo.active ? 'Pause' : 'Resume'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  onClick={() => handleDelete(promo.id)}
+                >
+                  Delete
+                </Button>
+              </div>
             </div>
-            <p className="subtle small" style={{ margin: '4px 0 10px' }}>
-              Automatic repeat-customer reward · applies at checkout for enrolled regulars
-            </p>
-            <div className="row-wrap">
-              <Badge tone="blue" dot={false}>
-                23 members enrolled
-              </Badge>
-              <Badge tone="green" dot={false}>
-                7 rewards redeemed
-              </Badge>
+          ))}
+          {!loading && promotions.length === 0 && (
+            <div className="card center subtle" style={{ padding: '48px 24px' }}>
+              No promotions active yet. Create one to fill empty slots!
             </div>
-            <div className="row" style={{ marginTop: 10 }}>
-              <Button size="sm" onClick={drawer.open}>
-                Edit
-              </Button>
-              <Button size="sm" variant="tertiary" to={paths.owner.customers}>
-                View members
-              </Button>
+          )}
+          {loading && (
+            <div className="card center subtle" style={{ padding: '48px 24px' }}>
+              Loading promotions...
             </div>
-          </div>
-
-          <div className="card" style={{ borderLeft: '3px solid var(--warn)' }}>
-            <div className="between">
-              <h3 style={{ margin: 0 }}>Eid Week Special −৳500</h3>
-              <Badge tone="amber">Scheduled</Badge>
-            </div>
-            <p className="subtle small" style={{ margin: '4px 0 10px' }}>
-              Fixed ৳500 off evening slots · 15–22 Aug · limited to first 40 bookings
-            </p>
-            <div className="row">
-              <Button size="sm" onClick={drawer.open}>
-                Edit
-              </Button>
-              <Button
-                size="sm"
-                variant="ghostDanger"
-                onClick={() => showToast('Campaign deleted — undo? (30s)')}
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-
-          <div className="card" style={{ opacity: 0.7 }}>
-            <div className="between">
-              <h3 style={{ margin: 0 }}>Ramadan Midnight −25%</h3>
-              <Badge tone="gray">Ended 30 Apr</Badge>
-            </div>
-            <p className="subtle small" style={{ margin: '4px 0 0' }}>
-              96 bookings · ৳1,58,300 revenue ·{' '}
-              <Button size="sm" variant="tertiary" onClick={() => showToast('Duplicated as a new draft ✓')}>
-                Duplicate
-              </Button>
-            </p>
-          </div>
+          )}
         </div>
 
         <div className="glass glass-card">
-          <h3>💡 Suggested for you</h3>
+          <h3>Quick starts</h3>
+          <p className="tiny muted" style={{ marginTop: 2 }}>
+            Templates you can edit before launching. TurfChai does not analyse your empty slots
+            yet, so these are starting points rather than recommendations.
+          </p>
           <div className="stack-sm" style={{ marginTop: 10 }}>
             <div className="panel">
-              <b className="small">Tue–Wed 2–4 PM is 71% empty</b>
+              <b className="small">Off-peak discount</b>
               <p className="tiny muted" style={{ margin: '2px 0 6px' }}>
-                A 25–35% off-peak discount typically fills 60% of these slots.
+                A percentage off to move quieter weekday hours.
               </p>
-              <Button size="sm" variant="primary" onClick={drawer.open}>
-                Create off-peak promo
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  resetForm();
+                  setLabel('Off-Peak Deal');
+                  setCode('OFFPEAK30');
+                  setDiscountType('PERCENT');
+                  setDiscountValue('30');
+                  drawer.open();
+                }}
+              >
+                Start off-peak promo
               </Button>
             </div>
             <div className="panel">
-              <b className="small">3 regulars near loyalty milestone</b>
+              <b className="small">Your customers</b>
               <p className="tiny muted" style={{ margin: '2px 0 6px' }}>
-                Rafiul K. (9/10), Karim Traders (15 visits), Tanvir A. (8 visits).
+                See who books most often and how reliable they are.
               </p>
               <Button size="sm" to={paths.owner.customers}>
                 Review customers
@@ -164,38 +283,51 @@ export default function PromotionsPage() {
         </div>
       </div>
 
-      {/* New promotion drawer */}
-      <Overlay isOpen={drawer.isOpen} onClose={drawer.close} title="New promotion" mode="drawer">
-        <div className="field" style={{ marginTop: 8 }}>
-          <label>Type</label>
-          <div className="row-wrap">
-            {TYPE_CHIPS.map((chip) => (
-              <Chip key={chip} active={typeChips.isActive(chip)} onToggle={() => typeChips.toggle(chip)}>
-                {chip}
-              </Chip>
-            ))}
-          </div>
-        </div>
-        <Field label="Name" htmlFor="npName">
-          <Input id="npName" value={name} onChange={(event) => setName(event.target.value)} />
+      {/* Promotion drawer — create or edit */}
+      <Overlay
+        isOpen={drawer.isOpen}
+        onClose={() => {
+          drawer.close();
+          resetForm();
+        }}
+        title={editingId ? 'Edit promotion' : 'New promotion'}
+        mode="drawer"
+      >
+        <Field label="Label (e.g. Weekday Off-Peak)" htmlFor="npLabel">
+          <Input id="npLabel" value={label} onChange={(event) => setLabel(event.target.value)} />
         </Field>
+
+        <Field
+          label="Promo Code (e.g. OFFPEAK30)"
+          htmlFor="npCode"
+          hint={editingId ? 'The code cannot be changed once players have it.' : undefined}
+        >
+          <Input
+            id="npCode"
+            value={code}
+            disabled={Boolean(editingId)}
+            onChange={(event) => setCode(event.target.value)}
+            style={{ textTransform: 'uppercase' }}
+          />
+        </Field>
+        
         <div className="grid2" style={{ gap: 10 }}>
           <Field label="Discount" htmlFor="npDisc">
             <div className="row">
               <Select
                 id="npDisc"
                 style={{ maxWidth: 100 }}
-                value={discountUnit}
-                onChange={(event) => setDiscountUnit(event.target.value)}
+                value={discountType}
+                onChange={(event) => setDiscountType(event.target.value)}
               >
-                <option>%</option>
-                <option>৳ fixed</option>
+                <option value="PERCENT">%</option>
+                <option value="FLAT">৳ fixed</option>
               </Select>
               <Input
                 className="num"
                 aria-label="Discount amount"
-                value={discountAmount}
-                onChange={(event) => setDiscountAmount(event.target.value)}
+                value={discountValue}
+                onChange={(event) => setDiscountValue(event.target.value)}
               />
             </div>
           </Field>
@@ -204,56 +336,40 @@ export default function PromotionsPage() {
               className="num"
               id="npCap"
               placeholder="e.g. 40 bookings"
-              value={cap}
-              onChange={(event) => setCap(event.target.value)}
+              value={usageLimit}
+              onChange={(event) => setUsageLimit(event.target.value)}
             />
           </Field>
         </div>
-        <div className="field">
-          <label>Days &amp; window</label>
-          <div className="row-wrap">
-            {DAY_CHIPS.map((day) => (
-              <Chip key={day} active={dayChips.isActive(day)} onToggle={() => dayChips.toggle(day)}>
-                {day}
-              </Chip>
-            ))}
-          </div>
-          <div className="grid2" style={{ gap: 10, marginTop: 8 }}>
-            <Select aria-label="From time" value={fromTime} onChange={(event) => setFromTime(event.target.value)}>
-              <option>12:00 PM</option>
-            </Select>
-            <Select aria-label="To time" value={toTime} onChange={(event) => setToTime(event.target.value)}>
-              <option>5:00 PM</option>
-            </Select>
-          </div>
+
+        <div className="grid2" style={{ gap: 10 }}>
+          <Field label="Valid From (optional)" htmlFor="npValidFrom">
+            <Input
+              type="datetime-local"
+              id="npValidFrom"
+              value={validFrom}
+              onChange={(event) => setValidFrom(event.target.value)}
+            />
+          </Field>
+          <Field label="Valid Until (optional)" htmlFor="npValidUntil">
+            <Input
+              type="datetime-local"
+              id="npValidUntil"
+              value={validUntil}
+              onChange={(event) => setValidUntil(event.target.value)}
+            />
+          </Field>
         </div>
-        <div className="field">
-          <label>Pitches</label>
-          <div className="row-wrap">
-            {PITCH_CHIPS.map((pitch) => (
-              <Chip key={pitch} active={pitchChips.isActive(pitch)} onToggle={() => pitchChips.toggle(pitch)}>
-                {pitch}
-              </Chip>
-            ))}
-          </div>
-        </div>
-        <div className="panel between">
-          <span className="small muted">Preview price (peak ৳2,200)</span>
-          <b className="num">
-            ৳1,540 <span className="tiny subtle">−30%</span>
-          </b>
-        </div>
+        
         <Button
           variant="primary"
           size="lg"
           block
           style={{ marginTop: 12 }}
-          onClick={() => {
-            drawer.close();
-            showToast('Promotion live — discounted slots now shown to players ✓');
-          }}
+          onClick={handleLaunch}
+          disabled={isSubmitting}
         >
-          Launch promotion
+          {isSubmitting ? 'Saving…' : editingId ? 'Save changes' : 'Launch promotion'}
         </Button>
       </Overlay>
     </>

@@ -38,6 +38,7 @@ public class AuthServiceImpl implements AuthService {
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
     private final OtpService otpService;
+    private final com.turfchai.admin.auth.AdminAuthProperties otpProperties;
 
     @Override
     @Transactional
@@ -92,12 +93,23 @@ public class AuthServiceImpl implements AuthService {
         return toAuthResponse(user);
     }
 
+    /**
+     * Issues a login code for a phone number.
+     *
+     * <p>
+     * The code is only echoed back to the caller when dev-code exposure is
+     * switched on. This endpoint is public, so returning the code
+     * unconditionally would let anyone sign in as any account whose phone number
+     * they know.
+     */
     @Override
     @Transactional
     public OtpRequestResponse requestOtp(OtpRequest request) {
         String phone = request.phone().trim();
         String code = otpService.generateAndStore(phone);
-        return new OtpRequestResponse(true, "Verification code sent to " + maskPhone(phone), 300, code);
+        boolean exposeCode = otpProperties.exposeDevCode();
+        return new OtpRequestResponse(true, "Verification code sent to " + maskPhone(phone), 300,
+                exposeCode ? code : null);
     }
 
     @Override
@@ -144,6 +156,14 @@ public class AuthServiceImpl implements AuthService {
         User user = userRepository.findByPublicId(publicId)
                 .orElseThrow(() -> new UserNotFoundException("User not found"));
         return toUserResponse(user);
+    }
+
+    @Override
+    public boolean checkEmail(String email) {
+        if (email == null || email.trim().isEmpty()) {
+            return false;
+        }
+        return userRepository.findByEmail(email.trim().toLowerCase()).isPresent();
     }
 
     @Override
@@ -202,8 +222,7 @@ public class AuthServiceImpl implements AuthService {
                 user.getAvatarInitials(),
                 user.getBio(),
                 user.getReliabilityScore(),
-                user.getCreatedAt()
-        );
+                user.getCreatedAt());
     }
 
     private RoleType parseRole(String roleName) {
@@ -215,7 +234,8 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private String maskPhone(String phone) {
-        if (phone == null || phone.length() < 4) return "••••";
+        if (phone == null || phone.length() < 4)
+            return "••••";
         return "•••• " + phone.substring(phone.length() - 4);
     }
 
@@ -224,9 +244,11 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private String initials(String fullName) {
-        if (fullName == null || fullName.isBlank()) return "??";
+        if (fullName == null || fullName.isBlank())
+            return "??";
         String[] parts = fullName.trim().split("\\s+");
-        if (parts.length == 1) return parts[0].substring(0, Math.min(2, parts[0].length())).toUpperCase();
+        if (parts.length == 1)
+            return parts[0].substring(0, Math.min(2, parts[0].length())).toUpperCase();
         return (parts[0].substring(0, 1) + parts[parts.length - 1].substring(0, 1)).toUpperCase();
     }
 }

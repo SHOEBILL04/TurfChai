@@ -1,151 +1,338 @@
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/buttons/Button';
+import { Badge } from '@/components/ui/Badge';
 import { Panel } from '@/components/ui/Panel';
 import { paths } from '@/routes/paths';
-import { getNotifications, markAllRead } from '@/api/notifications';
+import { listBookings, formatBookingDate, formatTimeRange } from '@/api/bookings';
+import { getNotifications, markAllRead, markRead } from '@/api/notifications';
+import { getWalletHistory } from '@/api/rewards';
+import { getMyStats } from '@/api/players';
 import { useApi } from '@/hooks/useApi';
-import { DashHeader, ServicePending } from './DashboardKit';
-
-/**
- * Sections whose backing service does not exist yet. They state exactly which
- * endpoint is missing rather than rendering invented bookings, payments or
- * notifications — fake data here would be indistinguishable from real data.
- */
+import { useToast } from '@/hooks/useToast';
+import { toUserMessage } from '@/utils/errorMessage';
+import { formatBdt } from '@/utils/format';
+import { DashCard, DashEmpty, DashError, DashHeader, DashSkeleton } from './DashboardKit';
 
 export function BookingsSection() {
+  const { data: bookings, loading, error, reload } = useApi(listBookings, []);
+  const bookingList = Array.isArray(bookings) ? bookings : [];
+
   return (
     <>
       <DashHeader title="My bookings" subtitle="Upcoming, past and cancelled turf bookings." />
-      <ServicePending
-        icon="📅"
-        title="Bookings aren’t connected yet"
-        description="Slot availability, reservations, invoices and cancellations all come from the booking service, which is still being built."
-        endpoints={['GET /api/v1/bookings', 'POST /api/v1/bookings', 'DELETE /api/v1/bookings/{id}']}
-        owner="booking engine"
-        cta={
-          <Button size="sm" to={paths.player.explore}>
-            Browse venues meanwhile
-          </Button>
-        }
-      />
-    </>
-  );
-}
 
-export function TeamsSection() {
-  return (
-    <>
-      <DashHeader title="My teams" subtitle="Teams you own, teams you’ve joined and invitations." />
-      <ServicePending
-        icon="👥"
-        title="Teams aren’t connected yet"
-        description="Persistent squads, rosters, invitations and team statistics need the team service. Tournament squads you register are shown under Tournaments."
-        endpoints={['GET /api/v1/teams', 'POST /api/v1/teams', 'GET /api/v1/teams/invitations']}
-        cta={
-          <Button size="sm" to={paths.player.dashboard.tournaments}>
-            See tournament squads
-          </Button>
-        }
-      />
-    </>
-  );
-}
+      {loading ? (
+        <DashSkeleton rows={3} />
+      ) : error ? (
+        <DashError message={toUserMessage(error, 'Could not load your bookings.')} onRetry={reload} />
+      ) : bookingList.length === 0 ? (
+        <DashEmpty
+          icon="📅"
+          title="No bookings yet"
+          actions={
+            <Button size="sm" to={paths.player.explore}>
+              Explore turfs & book a slot
+            </Button>
+          }
+        >
+          When you book pitches across Dhaka, your slot details, confirmation codes and check-in QR codes will appear here.
+        </DashEmpty>
+      ) : (
+        <div className="dash-rows">
+          {bookingList.map((booking, index) => {
+            // The detail route is keyed on the numeric id. A booking without
+            // one cannot be linked to, so it renders as a plain row instead of
+            // producing `/player/bookings/undefined`.
+            const detailId = booking?.id ?? null;
+            const key = detailId ?? booking?.bookingCode ?? `booking-${index}`;
+            const body = (
+              <>
+                <div className="dash-row-main">
+                  <b>{booking?.venueName || 'Turf booking'}</b>
+                  <span>
+                    {formatBookingDate(booking)} · {formatTimeRange(booking?.startTime, booking?.endTime)}
+                  </span>
+                </div>
+                <Badge tone={booking?.status === 'CONFIRMED' ? 'green' : 'gray'}>
+                  {booking?.status || 'PENDING'}
+                </Badge>
+              </>
+            );
 
-export function NetworkSection() {
-  return (
-    <>
-      <DashHeader
-        title="Player network"
-        subtitle="People you’ve played with, and who to invite next."
-      />
-      <ServicePending
-        icon="🤝"
-        title="Your network isn’t connected yet"
-        description="Recently-played-with players are derived from completed matches, so this needs both the booking service and the open-games attendance records."
-        endpoints={['GET /api/v1/players/me/network', 'GET /api/v1/bookings/{id}/participants']}
-        cta={
-          <Button size="sm" to={paths.solo.openGames}>
-            Find open games
-          </Button>
-        }
-      />
+            return detailId == null ? (
+              <div key={key} className="dash-row">
+                {body}
+              </div>
+            ) : (
+              <Link key={key} className="dash-row" to={paths.player.bookingDetail(detailId)}>
+                {body}
+              </Link>
+            );
+          })}
+        </div>
+      )}
     </>
   );
 }
 
 export function StatsSection() {
+  const { data, loading, error, reload } = useApi(getMyStats, []);
+
+  if (loading) {
+    return (
+      <>
+        <DashHeader title="Statistics" subtitle="Your bookings, check-ins and reliability." />
+        <DashSkeleton rows={3} />
+      </>
+    );
+  }
+  if (error) {
+    return (
+      <>
+        <DashHeader title="Statistics" subtitle="Your bookings, check-ins and reliability." />
+        <DashError message={toUserMessage(error, 'Could not load your statistics.')} onRetry={reload} />
+      </>
+    );
+  }
+
+  const stats = data ?? {};
+  const months = Array.isArray(stats.bookingsByMonth) ? stats.bookingsByMonth : [];
+  const busiest = months.reduce((max, month) => Math.max(max, month.bookings ?? 0), 0);
+
+  if ((stats.totalBookings ?? 0) === 0) {
+    return (
+      <>
+        <DashHeader title="Statistics" subtitle="Your bookings, check-ins and reliability." />
+        <DashEmpty
+          icon="📈"
+          title="Nothing to measure yet"
+          actions={
+            <Button size="sm" to={paths.player.explore}>
+              Book your first slot
+            </Button>
+          }
+        >
+          Your booking count, attendance and favourite venue appear here once you have played a game.
+        </DashEmpty>
+      </>
+    );
+  }
+
   return (
     <>
-      <DashHeader title="Statistics" subtitle="Matches, hours played, streaks and win rate." />
-      <ServicePending
-        icon="📈"
-        title="Statistics aren’t available yet"
-        description="Every figure here is aggregated from completed bookings and match results, so the charts stay empty until those services land. Your reliability score is already on your profile."
-        endpoints={['GET /api/v1/players/me/stats']}
-      />
+      <DashHeader title="Statistics" subtitle="Your bookings, check-ins and reliability." />
+
+      <div className="grid4" style={{ gap: 12 }}>
+        <StatTile label="Bookings" value={stats.totalBookings} />
+        <StatTile label="Played" value={stats.completedBookings} />
+        <StatTile label="Upcoming" value={stats.upcomingBookings} />
+        <StatTile label="Cancelled" value={stats.cancelledBookings} />
+      </div>
+
+      <div className="grid4" style={{ gap: 12, marginTop: 12 }}>
+        <StatTile label="Checked in" value={stats.checkedInCount} />
+        <StatTile label="Venues played" value={stats.venuesPlayed} />
+        <StatTile label="Open games" value={stats.openGamesJoined} />
+        <StatTile label="Reviews" value={stats.reviewsWritten} />
+      </div>
+
+      <DashCard title="Reliability" style={{ marginTop: 12 }}>
+        <div className="between">
+          <span className="subtle small">Attendance score used by open-game hosts</span>
+          <b className="num">{stats.reliabilityScore}%</b>
+        </div>
+      </DashCard>
+
+      <DashCard title="Spend & favourites" style={{ marginTop: 12 }}>
+        <div className="between small">
+          <span className="muted">Total spent</span>
+          <b className="num">{formatBdt(stats.totalSpent ?? 0)}</b>
+        </div>
+        <div className="between small" style={{ marginTop: 6 }}>
+          <span className="muted">Most-booked venue</span>
+          <b>{stats.favouriteVenueName ?? '—'}</b>
+        </div>
+      </DashCard>
+
+      {months.length > 0 ? (
+        <DashCard title="Bookings by month" style={{ marginTop: 12 }}>
+          <div className="stack-sm">
+            {months.map((month) => (
+              <div key={month.month} className="between small">
+                <span className="muted">{month.month}</span>
+                <span className="row" style={{ gap: 8, alignItems: 'center' }}>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      display: 'inline-block',
+                      height: 8,
+                      borderRadius: 4,
+                      background: 'var(--brand)',
+                      width: busiest > 0 ? `${Math.round((month.bookings / busiest) * 120)}px` : 0,
+                    }}
+                  />
+                  <b className="num">{month.bookings}</b>
+                </span>
+              </div>
+            ))}
+          </div>
+        </DashCard>
+      ) : null}
+
+      <p className="tiny subtle" style={{ marginTop: 10 }}>
+        TurfChai does not record match scores, so wins and losses are not shown.
+      </p>
     </>
   );
 }
 
+function StatTile({ label, value }) {
+  return (
+    <Panel>
+      <div className="tiny subtle">{label}</div>
+      <b className="num" style={{ fontSize: 22 }}>
+        {value ?? 0}
+      </b>
+    </Panel>
+  );
+}
+
 export function WalletSection() {
+  const { data, loading, error, reload } = useApi(getWalletHistory, []);
+  const entries = Array.isArray(data?.entries) ? data.entries : [];
+
   return (
     <>
-      <DashHeader title="Wallet & payments" subtitle="Transactions, refunds and invoices." />
-      <ServicePending
-        icon="৳"
-        title="Payments aren’t connected yet"
-        description="Balances, transaction history, refunds and downloadable invoices all come from the payments service. Tournament entry fees currently show as due and are settled with the organiser."
-        endpoints={['GET /api/v1/payments', 'GET /api/v1/payments/{id}/invoice', 'GET /api/v1/wallet']}
-        owner="payments module"
-      />
+      <DashHeader title="Wallet" subtitle="Your TurfChai credit and where it came from." />
+
+      {loading ? (
+        <DashSkeleton rows={3} />
+      ) : error ? (
+        <DashError message={toUserMessage(error, 'Could not load your wallet.')} onRetry={reload} />
+      ) : (
+        <>
+          <DashCard title="Balance">
+            <div className="between">
+              <span className="subtle small">Applied automatically at checkout</span>
+              <b className="num" style={{ fontSize: 24 }}>
+                {formatBdt(data?.balance ?? 0)}
+              </b>
+            </div>
+          </DashCard>
+
+          {entries.length === 0 ? (
+            <DashEmpty
+              icon="৳"
+              title="No wallet activity yet"
+              actions={
+                <Button size="sm" to={paths.player.rewards}>
+                  Redeem points for credit
+                </Button>
+              }
+            >
+              Reward redemptions and refunds land here, and the balance is offered at checkout.
+            </DashEmpty>
+          ) : (
+            <div className="dash-rows" style={{ marginTop: 12 }}>
+              {entries.map((entry) => (
+                <div className="dash-row" key={entry.id}>
+                  <div className="dash-row-main">
+                    <b>{entry.label}</b>
+                    <span>
+                      {entry.createdAt ? new Date(entry.createdAt).toLocaleDateString() : ''}
+                      {entry.bookingId ? ` · booking #${entry.bookingId}` : ''}
+                    </span>
+                  </div>
+                  <b
+                    className="num"
+                    style={{ color: Number(entry.delta) >= 0 ? 'var(--brand-600)' : 'var(--danger)' }}
+                  >
+                    {Number(entry.delta) >= 0 ? '+' : '−'}
+                    {formatBdt(Math.abs(Number(entry.delta ?? 0)))}
+                  </b>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </>
   );
 }
 
 export function NotificationsSection() {
   const { data: notifData, loading, error, reload } = useApi(getNotifications, []);
-  const notificationsList = notifData || [];
+  const { showToast } = useToast();
+  const navigate = useNavigate();
+  const notificationsList = Array.isArray(notifData) ? notifData : [];
+  const hasUnread = notificationsList.some((item) => !item?.isRead);
 
   const handleMarkAllRead = async () => {
     try {
       await markAllRead();
       reload();
     } catch (e) {
-      console.error(e);
+      showToast(toUserMessage(e, 'Could not mark these as read.'));
+    }
+  };
+
+  const openNotification = async (item) => {
+    if (!item?.isRead) {
+      try {
+        await markRead(item.id);
+        reload();
+      } catch (e) {
+        showToast(toUserMessage(e, 'Could not mark that notification as read.'));
+        return;
+      }
+    }
+    if (item?.link) {
+      navigate(item.link);
     }
   };
 
   return (
     <>
-      <DashHeader 
-        title="Notifications" 
-        subtitle="Reminders, invitations and announcements." 
-        action={notificationsList.some(n => !n.isRead) ? (
+      <DashHeader
+        title="Notifications"
+        subtitle="Reminders, invitations and announcements."
+        action={hasUnread ? (
           <button type="button" className="btn btn-tertiary btn-sm" onClick={handleMarkAllRead}>
             Mark all read
           </button>
         ) : null}
       />
-      {loading && <div style={{padding:40}} className="center">Loading notifications...</div>}
-      {error && <div style={{padding:40, color:'var(--danger)'}} className="center">Failed to load notifications</div>}
-      
-      {!loading && !error && notificationsList.length === 0 ? (
-        <ServicePending
-          icon="🔔"
-          title="All caught up!"
-          description="You don't have any notifications right now."
-        />
+
+      {loading ? (
+        <DashSkeleton rows={3} />
+      ) : error ? (
+        <DashError message={toUserMessage(error, 'Could not load your notifications.')} onRetry={reload} />
+      ) : notificationsList.length === 0 ? (
+        <DashCard>
+          <DashEmpty icon="🔔" title="All caught up!">
+            You do not have any notifications right now.
+          </DashEmpty>
+        </DashCard>
       ) : (
         <div className="stack-sm">
-          {notificationsList.map((item) => (
-            <Panel key={item.id} style={{ opacity: item.isRead ? 0.6 : 1 }}>
-              <b>{item.title}</b>
-              <p className="small muted" style={{ margin: '2px 0 0' }}>
-                {item.body}
-              </p>
-              <span className="tiny subtle">
-                {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : ''}
-              </span>
-            </Panel>
+          {notificationsList.map((item, index) => (
+            <button
+              key={item?.id ?? `notification-${index}`}
+              type="button"
+              className="notif-item"
+              aria-label={`${item?.title ?? 'Notification'}${item?.isRead ? '' : ', unread'}`}
+              onClick={() => openNotification(item)}
+            >
+              <Panel style={{ opacity: item?.isRead ? 0.6 : 1 }}>
+                <b>{item?.title ?? 'Notification'}</b>
+                <p className="small muted" style={{ margin: '2px 0 0' }}>
+                  {item?.body}
+                </p>
+                <span className="tiny subtle">
+                  {item?.createdAt ? new Date(item.createdAt).toLocaleDateString() : ''}
+                </span>
+              </Panel>
+            </button>
           ))}
         </div>
       )}

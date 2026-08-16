@@ -6,6 +6,7 @@ import com.turfchai.reward.dto.response.PointActivityResponse;
 import com.turfchai.reward.dto.response.PointsSummaryResponse;
 import com.turfchai.reward.dto.response.RedemptionResponse;
 import com.turfchai.reward.dto.response.RewardProductResponse;
+import com.turfchai.reward.dto.response.TierResponse;
 import com.turfchai.reward.service.RewardService;
 import com.turfchai.security.UserPrincipal;
 import jakarta.validation.Valid;
@@ -25,7 +26,8 @@ import java.util.List;
  * Player Loyalty & Rewards Program REST API. Endpoints resolve the caller from
  * the JWT security principal; all of them require authentication except the
  * catalog, which visitors may browse before signing up.
- * Error handling is delegated to {@link com.turfchai.exception.GlobalExceptionHandler}.
+ * Error handling is delegated to
+ * {@link com.turfchai.exception.GlobalExceptionHandler}.
  */
 @RestController
 @RequestMapping("/api/v1/rewards")
@@ -34,11 +36,24 @@ public class RewardRestController {
 
     private final RewardService rewardService;
 
-    /** GET /api/v1/rewards/products — active reward catalog, annotated with the caller's unlock state. */
+    /**
+     * GET /api/v1/rewards/products — active reward catalog, annotated with the
+     * caller's unlock state.
+     */
     @GetMapping("/products")
     public ResponseEntity<ApiResponse<List<RewardProductResponse>>> listProducts(Authentication authentication) {
         List<RewardProductResponse> products = rewardService.listRewardProducts(optionalUserId(authentication));
         return ResponseEntity.ok(ApiResponse.ok(products));
+    }
+
+    /**
+     * GET /api/v1/rewards/tiers — the whole ladder, in order. Public, because the
+     * rewards page shows it to visitors too; without it the page had to hardcode
+     * every threshold and perk, which then drifted from the seeded rows.
+     */
+    @GetMapping("/tiers")
+    public ResponseEntity<ApiResponse<List<TierResponse>>> listTiers() {
+        return ResponseEntity.ok(ApiResponse.ok(rewardService.listTiers()));
     }
 
     /** POST /api/v1/rewards/redeem — spends points on a catalog item. */
@@ -50,19 +65,34 @@ public class RewardRestController {
         return ResponseEntity.ok(ApiResponse.ok(redemption, "Reward redeemed successfully"));
     }
 
-    /** GET /api/v1/rewards/my-points — current balance, wallet balance, and tier progress. */
+    /**
+     * GET /api/v1/rewards/my-points — current balance, wallet balance, and tier
+     * progress.
+     */
     @GetMapping("/my-points")
     public ResponseEntity<ApiResponse<PointsSummaryResponse>> myPoints(Authentication authentication) {
         return ResponseEntity.ok(ApiResponse.ok(rewardService.getMyPoints(currentUserId(authentication))));
     }
 
-    /** GET /api/v1/rewards/activity — recent points ledger entries, most recent first. */
+    /**
+     * GET /api/v1/rewards/activity — recent points ledger entries, most recent
+     * first.
+     */
     @GetMapping("/activity")
     public ResponseEntity<ApiResponse<List<PointActivityResponse>>> activity(
             Authentication authentication,
             @RequestParam(defaultValue = "30") int limit) {
         List<PointActivityResponse> activity = rewardService.getRecentActivity(currentUserId(authentication), limit);
         return ResponseEntity.ok(ApiResponse.ok(activity));
+    }
+
+    /** GET /api/v1/rewards/wallet — wallet balance plus the ledger behind it. */
+    @GetMapping("/wallet")
+    public ResponseEntity<ApiResponse<com.turfchai.reward.dto.WalletHistoryResponse>> wallet(
+            Authentication authentication,
+            @RequestParam(defaultValue = "30") int limit) {
+        return ResponseEntity.ok(ApiResponse.ok(
+                rewardService.getWalletHistory(currentUserId(authentication), limit)));
     }
 
     private Long currentUserId(Authentication authentication) {

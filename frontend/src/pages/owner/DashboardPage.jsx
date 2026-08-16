@@ -3,132 +3,268 @@ import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/buttons/Button';
 import { KpiCard } from '@/components/cards/KpiCard';
+import { Card, GlassCard } from '@/components/cards/Card';
+import { Input } from '@/components/forms/Field';
 import { Overlay } from '@/components/modals/Overlay';
 import { PageTitle } from '@/components/common/PageTitle';
 import { Progress } from '@/components/ui/Progress';
-import { currentOwner } from '@/data/users';
+import { getOwnerAnalytics } from '@/api/ownerAnalytics';
+import { getOwnerBookings } from '@/api/ownerBookings';
+import { checkInBooking } from '@/api/bookings';
+import { listMyVenues } from '@/api/ownerVenues';
+import { getMyTurfRequests } from '@/api/turfRequests';
+import { useApi } from '@/hooks/useApi';
 import { useDisclosure } from '@/hooks/useDisclosure';
+import { useSession } from '@/hooks/useSession';
 import { useToast } from '@/hooks/useToast';
+import { toUserMessage } from '@/utils/errorMessage';
 import { paths } from '@/routes/paths';
 import { useState } from 'react';
 import './DashboardPage.css';
 
-const KPIS = [
-  { label: "Today's revenue", value: '৳18,400', delta: '▲ 12% vs last Fri', trend: 'up' },
-  { label: 'Bookings today', value: '14', delta: '▲ 2 more than avg', trend: 'up' },
-  { label: 'Occupancy', value: '72%', delta: 'Peak 4–11 PM: 94%' },
-  { label: 'Pending payments', value: '৳4,300', delta: '3 bookings awaiting', trend: 'down' },
-];
+/** The greeting was hardcoded to "Good evening" regardless of the clock. */
+function greeting(now = new Date()) {
+  const hour = now.getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
 
-const NEXT_UP = [
-  {
-    id: 'p2-730',
-    slot: '7:30 PM · Pitch 2',
-    badge: { tone: 'green', text: 'Online · paid' },
-    detail: 'Rafiul Karim · 10 players · TC-48291 · handover 7:20',
-    action: { kind: 'link', to: paths.owner.bookings, label: 'Detail', variant: 'secondary' },
-  },
-  {
-    id: 'p1-730',
-    slot: '7:30 PM · Pitch 1',
-    badge: { tone: 'amber', text: 'Phone · deposit' },
-    detail: 'Karim Traders XI · ৳765 paid · ৳1,785 due',
-    action: { kind: 'toast', toast: 'Marked as arrived ✓', label: 'Arrived', variant: 'secondary' },
-  },
-  {
-    id: 'p2-900',
-    slot: '9:00 PM · Pitch 2',
-    badge: { tone: 'blue', text: 'Open game' },
-    detail: 'Friday Night Football · host Rifat H. · 10/10 paid',
-    action: { kind: 'link', to: paths.owner.bookings, label: 'Detail', variant: 'secondary' },
-  },
-  {
-    id: 'p3-900',
-    slot: '9:00 PM · Pitch 3',
-    badge: { tone: 'gray', text: 'Empty' },
-    detail: 'Futsal court unbooked tonight',
-    action: { kind: 'link', to: paths.owner.promotions, label: 'Promote', variant: 'primary' },
-  },
-];
-
-const ACTIVITY = [
-  {
-    id: 'bkash',
-    title: 'bKash payment reconciled — ৳2,550',
-    detail: 'TC-48291 · Rafiul K. · auto-matched to evening shift · 6:12 PM',
-  },
-  {
-    id: 'open-game',
-    title: 'Open game filled 10/10',
-    detail: 'Friday Night Football · last share ৳280 paid · 5:47 PM',
-  },
-  {
-    id: 'walk-in',
-    title: 'Walk-in cash booking — ৳1,700',
-    detail: 'Pitch 3 · added by staff Sumon · afternoon shift · 3:05 PM',
-  },
-  {
-    id: 'refund',
-    title: 'Refund issued — ৳2,200',
-    detail: 'TC-48102 cancelled 26h ahead · full refund per policy · 11:40 AM',
-  },
-];
-
-const ATTENTION = [
-  {
-    id: 'deposits',
-    tone: 'warn',
-    icon: '💰',
-    title: '3 deposit bookings due tonight',
-    body: '৳4,300 to collect at venue. ',
-    link: { to: paths.owner.bookings, label: 'View list' },
-  },
-  {
-    id: 'reviews',
-    tone: 'info',
-    icon: '⭐',
-    title: '2 new reviews await response',
-    body: 'Replying raises repeat bookings. ',
-    link: { to: paths.owner.reviews, label: 'Respond' },
-  },
-  {
-    id: 'offpeak',
-    tone: 'info',
-    icon: '📉',
-    title: 'Tue–Wed 2–4 PM off-peak low',
-    body: 'Try an off-peak promo. ',
-    link: { to: paths.owner.promotions, label: 'Create' },
-  },
-];
+/** Every document row used to read "Attached ✓" whether one was or not. */
+function DocumentState({ value }) {
+  if (!value || value === 'PENDING') return <b className="subtle">Not provided</b>;
+  return <b style={{ color: 'var(--brand-500)' }}>Attached ✓</b>;
+}
 
 export default function DashboardPage() {
   const { showToast } = useToast();
   const scanner = useDisclosure(false);
   const [scanResult, setScanResult] = useState(null);
+  const [ticketRef, setTicketRef] = useState('');
+  const [checkingIn, setCheckingIn] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState(null);
 
-  /** Simulated gate scan: `ok` matches the current slot, `bad` is a slot mismatch. */
-  function simulateScan(result) {
-    setScanResult(result);
-    showToast(
-      result === 'ok' ? '✅ Checked in — attendance registered' : '⛔ QR does not match this slot',
+  const { data: bookingsRes, reload: reloadBookings } = useApi(getOwnerBookings, []);
+  const ownerBookings = Array.isArray(bookingsRes)
+    ? bookingsRes
+    : (Array.isArray(bookingsRes?.data) ? bookingsRes.data : []);
+
+  /**
+   * Real gate check-in. This used to be two "Simulate scan" buttons that
+   * toasted "attendance registered" without contacting the server, quoting
+   * booking references that do not exist.
+   */
+  async function checkInTicket(event) {
+    event.preventDefault();
+    const typed = ticketRef.trim();
+    if (!typed || checkingIn) return;
+
+    // The ticket QR encodes a booking-detail URL, so a pasted link works too.
+    const reference = typed.split('/').filter(Boolean).pop() ?? typed;
+    const match = ownerBookings.find(
+      (row) =>
+        String(row.bookingCode ?? '').toLowerCase() === reference.toLowerCase() ||
+        String(row.id) === reference,
     );
+
+    if (!match) {
+      setScanResult({ tone: 'danger', title: 'No such booking at your venue', body: `"${reference}" does not match any booking on your pitches.` });
+      return;
+    }
+
+    setCheckingIn(true);
+    try {
+      await checkInBooking(match.id);
+    } catch (error) {
+      setScanResult({
+        tone: 'danger',
+        title: 'Check-in refused',
+        body: toUserMessage(error, 'The server would not record this check-in.'),
+      });
+      return;
+    } finally {
+      setCheckingIn(false);
+    }
+
+    setScanResult({
+      tone: 'ok',
+      title: `Checked in — ${match.bookingCode ?? match.id}`,
+      body: `${match.customer ?? 'Player'} · ${match.pitch ?? 'Pitch'} · ${match.time ?? ''}`.trim(),
+    });
+    setTicketRef('');
+    reloadBookings();
+    showToast('Attendance registered');
+  }
+
+  const { user: owner } = useSession();
+
+  const { data: venuesRes } = useApi(listMyVenues, [], { intervalMs: 30000 });
+  const venues = venuesRes?.data || venuesRes || [];
+  const activeVenue = venues[0];
+
+  const { data: requestsRes, reload: reloadRequests } = useApi(getMyTurfRequests, [], { intervalMs: 20000 });
+  const myRequests = Array.isArray(requestsRes) ? requestsRes : [];
+  const latestRequest = myRequests[0] || null;
+
+  const isPendingVerification = latestRequest?.status === 'PENDING' || (!activeVenue && latestRequest);
+
+  const { data: analyticsRes, loading } = useApi(getOwnerAnalytics, []);
+  const analyticsData = analyticsRes?.data || analyticsRes || {};
+
+  const rawKpis = analyticsData.kpis;
+  const KPIS = Array.isArray(rawKpis)
+    ? rawKpis
+    : (rawKpis && typeof rawKpis === 'object'
+        ? [
+            // A missing figure is not a measured zero.
+            { label: "Today's revenue", value: rawKpis.revenue || '—' },
+            { label: 'Bookings today', value: rawKpis.booked || '—' },
+            { label: 'Occupancy', value: rawKpis.occupancy || '—' },
+            { label: 'Pending payments', value: rawKpis.pending || '—' },
+          ]
+        : []);
+
+  const NEXT_UP = Array.isArray(analyticsData.nextUp) ? analyticsData.nextUp : [];
+  const ACTIVITY = Array.isArray(analyticsData.activity) ? analyticsData.activity : [];
+  const ATTENTION = Array.isArray(analyticsData.attention) ? analyticsData.attention : [];
+  const WEEKLY = analyticsData.weekly ?? {};
+
+  const channelTotal = Number(WEEKLY.onlineBookings ?? 0) + Number(WEEKLY.manualBookings ?? 0);
+  const weekOnWeek = (() => {
+    const previous = Number(WEEKLY.previousRevenue ?? 0);
+    const current = Number(WEEKLY.revenue ?? 0);
+    if (previous === 0) return current === 0 ? 'No takings in either week' : 'No takings the week before';
+    const change = Math.round(((current - previous) / previous) * 100);
+    return `${change >= 0 ? '+' : ''}${change}% vs the previous 7 days`;
+  })();
+
+  let requestPhotos = [];
+  if (latestRequest?.photosJson) {
+    try {
+      requestPhotos = JSON.parse(latestRequest.photosJson);
+    } catch {
+      requestPhotos = [];
+    }
   }
 
   return (
     <>
       <PageTitle title="Dashboard" />
 
+      {/* Verification Pending Banner / Account Lock Card */}
+      {isPendingVerification ? (
+        <div style={{ maxWidth: 860, margin: '16px auto 32px' }}>
+          <Alert tone="amber" icon="⏳" title="Venue Verification Pending (Account Locked)" style={{ marginBottom: 20, padding: 18 }}>
+            Your venue registration request for <b>{latestRequest?.venueName || 'Your Venue'}</b> is currently under review by the TurfChai admin team.
+            Core operational features (live QR scanner, manual slot bookings, ledger payouts) will unlock automatically once approved.
+          </Alert>
+
+          <GlassCard style={{ padding: 24, marginBottom: 20 }}>
+            <div className="between" style={{ marginBottom: 16 }}>
+              <div>
+                <h2 style={{ margin: 0 }}>{latestRequest?.venueName || 'My Venue'}</h2>
+                <span className="subtle small">
+                  Request Code: <b className="num">{latestRequest?.requestCode || '—'}</b> · Area: {latestRequest?.area || '—'}
+                </span>
+              </div>
+              <Badge tone="amber">Status: PENDING ADMIN APPROVAL</Badge>
+            </div>
+
+            <div className="grid2" style={{ gap: 16, marginBottom: 16 }}>
+              <div className="panel stack-sm" style={{ padding: 14 }}>
+                <span className="tiny subtle">PITCH & SPORTS DETAILS</span>
+                <div className="between small">
+                  <span className="muted">Pitch Count</span>
+                  <b>{latestRequest?.pitchCount ? `${latestRequest.pitchCount} pitch(es)` : '—'}</b>
+                </div>
+                <div className="between small">
+                  <span className="muted">Sports Supported</span>
+                  <b>{latestRequest?.sportsCsv || '—'}</b>
+                </div>
+                <div className="between small">
+                  <span className="muted">Owner Phone</span>
+                  <b className="num">{latestRequest?.ownerPhone || '—'}</b>
+                </div>
+              </div>
+
+              <div className="panel stack-sm" style={{ padding: 14 }}>
+                <span className="tiny subtle">VERIFICATION DOCUMENTS</span>
+                <div className="between small">
+                  <span className="muted">Trade License</span>
+                  <DocumentState value={latestRequest?.docTradeLicense} />
+                </div>
+                <div className="between small">
+                  <span className="muted">Owner NID</span>
+                  <DocumentState value={latestRequest?.docOwnerNid} />
+                </div>
+                <div className="between small">
+                  <span className="muted">Utility / Lease Proof</span>
+                  <DocumentState value={latestRequest?.docUtilityBill} />
+                </div>
+              </div>
+            </div>
+
+            {/* Submitted Pitch Photos Gallery */}
+            {requestPhotos.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <span className="subtle small" style={{ display: 'block', marginBottom: 8, fontWeight: 600 }}>
+                  Submitted Pitch Photos ({requestPhotos.length}):
+                </span>
+                <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+                  {requestPhotos.map((url, idx) => (
+                    <img
+                      key={idx}
+                      src={url}
+                      alt={`Pitch photo ${idx + 1}`}
+                      onClick={() => setPreviewPhoto(url)}
+                      style={{
+                        width: 80,
+                        height: 80,
+                        objectFit: 'cover',
+                        borderRadius: 10,
+                        border: '1px solid var(--border-soft)',
+                        cursor: 'pointer',
+                      }}
+                      title="Click to view photo"
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="row" style={{ marginTop: 24, gap: 12, justifyContent: 'flex-end' }}>
+              <Button variant="secondary" to={paths.owner.onboarding}>
+                Edit Onboarding Request ✏️
+              </Button>
+              <Button variant="primary" onClick={() => { reloadRequests(); showToast('Checking verification status…'); }}>
+                Check Verification Status 🔄
+              </Button>
+            </div>
+          </GlassCard>
+
+          {/* Photo Preview Modal */}
+          <Overlay isOpen={!!previewPhoto} onClose={() => setPreviewPhoto(null)} title="Venue Pitch Photo Preview" maxWidth={680}>
+            <div style={{ textAlign: 'center', padding: 12 }}>
+              <img src={previewPhoto} alt="Venue preview" style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: 12, objectFit: 'contain' }} />
+            </div>
+          </Overlay>
+        </div>
+      ) : null}
+
       <div className="main-header">
         <div>
-          <h1>Good evening, {currentOwner?.shortName ?? 'Owner'} 🏟️</h1>
+          <h1>
+            {greeting()}, {owner?.fullName || 'there'} 🏟️
+          </h1>
           <span className="subtle small">
-            {currentOwner?.venue ?? '—'} · {currentOwner?.area ?? '—'} · <Badge tone="green">Live</Badge>
+            {activeVenue ? `${activeVenue.name} · ${activeVenue.area} · ` : (latestRequest ? `${latestRequest.venueName} · ` : 'My Venue · ')}
+            <Badge tone={isPendingVerification ? 'amber' : 'green'}>{isPendingVerification ? 'Pending Approval' : 'Live'}</Badge>
           </span>
         </div>
         <div className="row">
-          <Button to={paths.owner.calendar}>🗓️ Calendar</Button>
-          <Button to={paths.owner.calendar}>+ Manual booking</Button>
-          <Button variant="primary" onClick={scanner.open}>
+          <Button to={paths.owner.calendar} disabled={isPendingVerification}>🗓️ Calendar</Button>
+          <Button to={paths.owner.calendar} disabled={isPendingVerification}>+ Manual booking</Button>
+          <Button variant="primary" onClick={scanner.open} disabled={isPendingVerification}>
             📷 Scan player QR
           </Button>
         </div>
@@ -139,6 +275,7 @@ export default function DashboardPage() {
         {KPIS.map((kpi) => (
           <KpiCard key={kpi.label} label={kpi.label} value={kpi.value} delta={kpi.delta} trend={kpi.trend} />
         ))}
+        {loading && <div className="tiny subtle center">Loading KPIs...</div>}
       </div>
 
       {/* 2-Column Minimal Operational Grid */}
@@ -147,33 +284,30 @@ export default function DashboardPage() {
         <div className="stack">
           <section className="card">
             <div className="between" style={{ marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>Next up on your pitches</h3>
+                <h2 style={{ margin: 0, fontSize: 16 }}>Next up on your pitches</h2>
               <Link className="btn btn-sm btn-tertiary" to={paths.owner.calendar}>
                 View schedule →
               </Link>
             </div>
             <div className="stack-sm">
-              {NEXT_UP.map((row) => (
-                <div className="panel between" key={row.id}>
-                  <div>
-                    <b className="small num">{row.slot}</b>{' '}
-                    <Badge tone={row.badge.tone} dot={false}>
-                      {row.badge.text}
-                    </Badge>
-                    <div className="tiny subtle">{row.detail}</div>
+                {NEXT_UP.map((row) => (
+                  <div className="panel between" key={row.id}>
+                    <div>
+                      <b className="small num">{row.slot}</b>{' '}
+                      <Badge tone={row.badge.tone} dot={false}>
+                        {row.badge.text}
+                      </Badge>
+                      <div className="tiny subtle">{row.detail}</div>
+                    </div>
+                    {row.action.kind === 'link' ? (
+                      <Button size="sm" variant={row.action.variant} to={row.action.to}>
+                        {row.action.label}
+                      </Button>
+                    ) : null}
                   </div>
-                  {row.action.kind === 'link' ? (
-                    <Button size="sm" variant={row.action.variant} to={row.action.to}>
-                      {row.action.label}
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant={row.action.variant} onClick={() => showToast(row.action.toast)}>
-                      {row.action.label}
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
+                ))}
+                {!loading && NEXT_UP.length === 0 && <div className="tiny subtle center">No upcoming slots</div>}
+              </div>
           </section>
 
           <section className="card">
@@ -192,6 +326,7 @@ export default function DashboardPage() {
                   </p>
                 </li>
               ))}
+              {!loading && ACTIVITY.length === 0 && <li className="tiny subtle center">No recent activity</li>}
             </ul>
           </section>
         </div>
@@ -201,7 +336,8 @@ export default function DashboardPage() {
           <section className="card">
             <div className="between" style={{ marginBottom: 12 }}>
               <h3 style={{ margin: 0 }}>Needs attention</h3>
-              <span className="countpill">3</span>
+              {/* The pill was a literal 3, sitting above an empty list. */}
+              {ATTENTION.length > 0 ? <span className="countpill">{ATTENTION.length}</span> : null}
             </div>
             <div className="stack-sm">
               {ATTENTION.map((item) => (
@@ -210,84 +346,91 @@ export default function DashboardPage() {
                   <Link to={item.link.to}>{item.link.label}</Link>
                 </Alert>
               ))}
+              {!loading && ATTENTION.length === 0 && <div className="tiny subtle center">All good!</div>}
             </div>
           </section>
 
           <section className="card">
-            <h3 style={{ marginBottom: 12 }}>Weekly performance</h3>
+            <h3 style={{ marginBottom: 12 }}>Last 7 days</h3>
             <div className="stack-sm">
               <div>
                 <div className="between small">
-                  <span className="muted">Revenue goal</span>
-                  <b className="num">৳96,700 / ৳110,000 (88%)</b>
+                  <span className="muted">Takings</span>
+                  <b className="num">৳{Number(WEEKLY.revenue ?? 0).toLocaleString('en-BD')}</b>
                 </div>
-                <Progress value={88} label="Revenue goal" />
+                <span className="tiny subtle">{weekOnWeek}</span>
               </div>
               <div>
                 <div className="between small">
-                  <span className="muted">Occupancy rate</span>
-                  <b className="num">68%</b>
+                  <span className="muted">Occupancy</span>
+                  <b className="num">
+                    {WEEKLY.occupancyPercent == null ? '—' : `${WEEKLY.occupancyPercent}%`}
+                  </b>
                 </div>
-                <Progress value={68} label="Occupancy rate" />
+                <Progress value={WEEKLY.occupancyPercent ?? 0} label="Occupancy over the last 7 days" />
+                <span className="tiny subtle">
+                  {WEEKLY.slotsPublished
+                    ? `${WEEKLY.slotsBooked} of ${WEEKLY.slotsPublished} slots booked`
+                    : 'No slots published for this week'}
+                </span>
               </div>
             </div>
             <div className="between small" style={{ marginTop: 14 }}>
-              <span className="muted">Booking channels</span>
+              <span className="muted">Booking source</span>
             </div>
             <div className="row-wrap" style={{ marginTop: 6 }}>
-              <Badge tone="green" dot={false}>
-                Online 61%
-              </Badge>
-              <Badge tone="amber" dot={false}>
-                Phone 22%
-              </Badge>
-              <Badge tone="blue" dot={false}>
-                Walk-in 17%
-              </Badge>
+              {channelTotal === 0 ? (
+                <span className="tiny subtle">No confirmed bookings in the last 7 days.</span>
+              ) : (
+                <>
+                  <Badge tone="green" dot={false}>
+                    Online {Math.round((100 * (WEEKLY.onlineBookings ?? 0)) / channelTotal)}%
+                  </Badge>
+                  <Badge tone="blue" dot={false}>
+                    Manual {Math.round((100 * (WEEKLY.manualBookings ?? 0)) / channelTotal)}%
+                  </Badge>
+                </>
+              )}
             </div>
           </section>
         </div>
       </div>
 
-      <Overlay isOpen={scanner.isOpen} onClose={scanner.close} title="Scan player QR" maxWidth={440}>
+      <Overlay isOpen={scanner.isOpen} onClose={scanner.close} title="Check in a player" maxWidth={440}>
         <p className="subtle small" style={{ margin: '4px 0 12px' }}>
-          Gate check-in · verifying against <b>Pitch 2 · 7:30–9:00 PM</b> (current slot)
+          Gate check-in · enter the reference on the player&apos;s match ticket, or paste the
+          link their QR opens.
         </p>
-        <div className="viewfinder" aria-hidden="true">
-          <i className="scanline" />
-          <span className="corner tl" />
-          <span className="corner tr" />
-          <span className="corner bl" />
-          <span className="corner br" />
-          <div className="vf-hint">Point the camera at the player&apos;s match ticket QR</div>
-        </div>
+        <form onSubmit={checkInTicket}>
+          <div className="field">
+            <label htmlFor="ticket-ref">Booking reference</label>
+            <Input
+              id="ticket-ref"
+              placeholder="e.g. TC-48291"
+              value={ticketRef}
+              onChange={(event) => setTicketRef(event.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          <Button type="submit" variant="primary" block disabled={!ticketRef.trim() || checkingIn}>
+            {checkingIn ? 'Checking in…' : 'Check in'}
+          </Button>
+        </form>
         <div role="status" style={{ marginTop: 12 }}>
-          {scanResult === 'ok' ? (
-            <Alert tone="ok" icon="✅" title="Access granted — TC-48291" style={{ margin: 0 }}>
-              Rafiul Karim · 10 players · Pitch 2 · 7:30–9:00 PM
-              <br />
-              <span className="tiny">
-                Ticket matches this slot &amp; time · checked in 7:21 PM · attendance auto-registered
-              </span>
+          {scanResult ? (
+            <Alert
+              tone={scanResult.tone}
+              icon={scanResult.tone === 'ok' ? '✅' : '⛔'}
+              title={scanResult.title}
+              style={{ margin: 0 }}
+            >
+              {scanResult.body}
             </Alert>
           ) : null}
-          {scanResult === 'bad' ? (
-            <Alert tone="danger" icon="⛔" title="Access denied — slot mismatch" style={{ margin: 0 }}>
-              TC-47110 is for 9:00 PM · Pitch 3, not this gate’s current slot.
-              <br />
-              <span className="tiny">
-                Ask the player to wait for their slot, or open the booking to verify manually.
-              </span>
-            </Alert>
-          ) : null}
-        </div>
-        <div className="grid2" style={{ gap: 8, marginTop: 12 }}>
-          <Button onClick={() => simulateScan('ok')}>Simulate scan · valid</Button>
-          <Button onClick={() => simulateScan('bad')}>Simulate · wrong slot</Button>
         </div>
         <p className="tiny subtle" style={{ margin: '10px 0 0' }}>
-          A valid scan matches the ticket&apos;s booking to this pitch, date and time window, grants entry, and
-          auto-registers attendance — no manual entry needed.
+          Check-in is recorded against the real booking and shows up on the player&apos;s ticket.
+          Camera scanning is not built yet, so the reference is typed in for now.
         </p>
       </Overlay>
     </>

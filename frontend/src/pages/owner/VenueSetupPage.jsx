@@ -1,5 +1,8 @@
 import {
+  useCallback,
+  useEffect,
   useState,
+  useRef,
 } from 'react';
 
 import {
@@ -56,60 +59,144 @@ import {
   useToast,
 } from '@/hooks/useToast';
 
+import { paths } from '@/routes/paths';
+
+
+import { generateSlots as apiGenerateSlots } from '@/api/ownerSlots';
+import { getMyTurfRequests } from '@/api/turfRequests';
+
+function CustomDatePicker({ value, onChange, id }) {
+  const [textVal, setTextVal] = useState(() => {
+    if (!value) return '';
+    const [y, m, d] = value.split('-');
+    return `${d}/${m}/${y}`;
+  });
+
+  const handleTextChange = (e) => {
+    const newVal = e.target.value;
+    setTextVal(newVal);
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(newVal)) {
+      const [d, m, y] = newVal.split('/');
+      onChange({ target: { value: `${y}-${m}-${d}` } });
+    } else if (newVal === '') {
+      onChange({ target: { value: '' } });
+    }
+  };
+
+  const handleNativeChange = (e) => {
+    const val = e.target.value;
+    onChange(e);
+    if (val) {
+      const [y, m, d] = val.split('-');
+      setTextVal(`${d}/${m}/${y}`);
+    } else {
+      setTextVal('');
+    }
+  };
+
+  return (
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', width: '100%' }}>
+      <div style={{ position: 'absolute', left: 12, display: 'flex', color: 'var(--text-3, #888)', pointerEvents: 'none' }}>
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+          <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/>
+        </svg>
+      </div>
+
+      <input 
+        type="date"
+        value={value}
+        onChange={handleNativeChange}
+        style={{ position: 'absolute', left: 8, width: 22, height: 22, opacity: 0, cursor: 'pointer', zIndex: 10 }} 
+      />
+      
+      <Input
+        id={id}
+        type="text"
+        placeholder="DD/MM/YYYY"
+        maxLength="10"
+        value={textVal}
+        onChange={handleTextChange}
+        style={{ paddingLeft: 34, width: '100%' }}
+      />
+    </div>
+  );
+}
+
+function CustomTimePicker({ value, onChange, id }) {
+  const [textVal, setTextVal] = useState(value || '');
+
+  const handleTextChange = (e) => {
+    const newVal = e.target.value;
+    setTextVal(newVal);
+    if (/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(newVal)) {
+      onChange({ target: { value: newVal } });
+    } else if (newVal === '') {
+      onChange({ target: { value: '' } });
+    }
+  };
+
+  const handleNativeChange = (e) => {
+    const val = e.target.value;
+    onChange(e);
+    setTextVal(val);
+  };
+
+  return (
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', width: '100%' }}>
+      <div style={{ position: 'absolute', left: 12, display: 'flex', color: 'var(--text-3, #888)', pointerEvents: 'none' }}>
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+          <path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71z"/>
+          <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0"/>
+        </svg>
+      </div>
+
+      <input 
+        type="time"
+        value={value}
+        onChange={handleNativeChange}
+        style={{ position: 'absolute', left: 8, width: 22, height: 22, opacity: 0, cursor: 'pointer', zIndex: 10 }} 
+      />
+      
+      <Input
+        id={id}
+        type="text"
+        placeholder="HH:MM"
+        maxLength="5"
+        value={textVal}
+        onChange={handleTextChange}
+        style={{ paddingLeft: 34, width: '100%' }}
+      />
+    </div>
+  );
+}
+
+
 import {
-  paths,
-} from '@/routes/paths';
+  createVenue,
+  listMyVenues,
+  getOwnerVenue,
+  updateVenue,
+  updateVenueStatus,
+  uploadVenuePhotoApi,
+  addPitch,
+  updatePitch,
+  deactivatePitch,
+  upsertPricingRule,
+} from '@/api/ownerVenues';
+import { toUserMessage } from '@/utils/errorMessage';
 
 const PHOTO_TILE = {
   width: 72,
   height: 72,
 };
 
-const PHOTOS = [
-  {
-    id: 'main',
-    variant: undefined,
-    glyph: '🏟️',
-  },
-  {
-    id: 'night',
-    variant: 'alt1',
-    glyph: '🌙',
-  },
-  {
-    id: 'goal',
-    variant: 'alt2',
-    glyph: '🥅',
-  },
-  {
-    id: 'run',
-    variant: 'alt3',
-    glyph: '🏃',
-  },
+const DEFAULT_PHOTOS = [
+  { id: 'main', variant: undefined, glyph: '🏟️' },
+  { id: 'night', variant: 'alt1', glyph: '🌙' },
+  { id: 'goal', variant: 'alt2', glyph: '🥅' },
+  { id: 'run', variant: 'alt3', glyph: '🏃' },
 ];
 
-const INITIAL_PITCHES = [
-  {
-    id: 1,
-    name: 'Pitch 1 · 7-a-side',
-    desc: 'Artificial grass · floodlit · 30×50 m',
-    sports: ['Football', 'Cricket'],
-  },
-  {
-    id: 2,
-    name: 'Pitch 2 · 7-a-side',
-    desc: 'Artificial grass · floodlit · 30×50 m',
-    sports: ['Football'],
-  },
-  {
-    id: 3,
-    name: 'Pitch 3 · 5-a-side futsal',
-    desc: 'Indoor · rubber court',
-    sports: ['Futsal', 'Badminton'],
-  },
-];
-
-/** One base price per sport — peak/off-peak comes from the pricing model, not the owner. */
 const INITIAL_SPORT_PRICING = [
   {
     id: 'football',
@@ -151,74 +238,80 @@ const INITIAL_SPORT_PRICING = [
 
 const bdt = (value) => `৳${Number(value).toLocaleString('en-US')}`;
 
-const HOURS = [
-  {
-    id: 'open',
-    label: 'OPEN',
-    value: '6:00 AM',
-  },
-  {
-    id: 'close',
-    label: 'CLOSE',
-    value: '11:00 PM',
-  },
-  {
-    id: 'buffer',
-    label: 'BUFFER',
-    value: '10 min',
-  },
+// The stored values are a fixed vocabulary (ck_venues_deposit / ck_venues_cancel)
+// and the refund engine switches on exactly these. The screen used to send its
+// own display labels, which the column rejected.
+const DEPOSIT_OPTIONS = [
+  { value: 'FULL_ONLY', label: 'Full payment only' },
+  { value: 'THIRTY_PERCENT', label: '30% deposit allowed' },
+  { value: 'FIFTY_PERCENT', label: '50% deposit' },
 ];
 
-const DEPOSIT_OPTIONS = ['Full payment only', '30% deposit allowed', '50% deposit'];
-
-const AMENITIES = [
-  {
-    id: 'floodlights',
-    label: 'Floodlights',
-    on: true,
-  },
-  {
-    id: 'parking',
-    label: 'Parking',
-    on: true,
-  },
-  {
-    id: 'changing',
-    label: 'Changing room',
-    on: true,
-  },
-  {
-    id: 'washroom',
-    label: 'Washroom',
-    on: true,
-  },
-  {
-    id: 'water',
-    label: 'Drinking water',
-    on: true,
-  },
-  {
-    id: 'kit',
-    label: 'Bibs & balls',
-    on: true,
-  },
-  {
-    id: 'cafeteria',
-    label: 'Cafeteria',
-    on: false,
-  },
+const CANCEL_OPTIONS = [
+  { value: 'FREE_24H_50_6H', label: 'Free cancel until 24h before · 50% within 24h · no refund within 6h' },
+  { value: 'FLEXIBLE_6H', label: 'Flexible — free cancel until 6h before' },
+  { value: 'STRICT_NO_REFUND', label: 'Strict — no refund' },
 ];
+
+/**
+ * The amenity vocabulary. Ids are the keys the backend stores in `amenities_csv`
+ * and the player venue page maps back to labels, so they are not free to rename.
+ * Nothing is on by default: what is enabled comes from the saved venue.
+ */
+const INITIAL_AMENITIES = [
+  { id: 'floodlights', label: '💡 Floodlights', on: false },
+  { id: 'parking', label: '🅿️ Parking', on: false },
+  { id: 'changing', label: '👕 Changing room', on: false },
+  { id: 'washroom', label: '🚿 Washroom', on: false },
+  { id: 'water', label: '🚰 Drinking water', on: false },
+  { id: 'kit', label: '⚽ Bibs & balls', on: false },
+  { id: 'cafeteria', label: '☕ Cafeteria', on: false },
+  { id: 'firstaid', label: '🩹 First aid kit', on: false },
+  { id: 'seating', label: '🪑 Spectator seating', on: false },
+  { id: 'wifi', label: '📶 Free Wi-Fi', on: false },
+];
+
+/** Rules are stored as free text, so these are suggestions rather than keys. */
+const INITIAL_RULES = [
+  { id: 'shoes', label: '👟 Turf / Astro shoes only (no metal studs)', on: false },
+  { id: 'smoking', label: '🚭 No smoking or vaping inside venue', on: false },
+  { id: 'arrival', label: '⏱️ Arrive 10 min before slot time', on: false },
+  { id: 'trash', label: '🗑️ Keep venue clean - disposal in bins', on: false },
+  { id: 'food', label: '🍕 No outside heavy food on pitch', on: false },
+];
+
+/** `"floodlights, parking"` -> `['floodlights','parking']`. */
+function parseCsv(value) {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Marks the catalogue against what the venue has saved, and appends anything
+ * saved that the catalogue does not know about so a save cannot silently drop
+ * amenities or rules entered elsewhere.
+ */
+function hydrateSelection(catalogue, saved, matchOn) {
+  const savedValues = parseCsv(saved);
+  const known = catalogue.map((item) => ({
+    ...item,
+    on: savedValues.includes(matchOn(item)),
+  }));
+  const extras = savedValues
+    .filter((value) => !catalogue.some((item) => matchOn(item) === value))
+    .map((value, index) => ({ id: `saved-${index}-${value}`, label: value, on: true }));
+  return [...known, ...extras];
+}
 
 const ASSIGNABLE_SPORTS = ['Football', 'Cricket', 'Futsal', 'Badminton', 'Volleyball'];
 
-/** Renders the coloured badge row for a pitch's assigned sports. */
 function SportTags({ sports }) {
-  if (!sports.length) {
+  if (!sports || !sports.length) {
     return (
-      <Badge
-        tone="gray"
-        dot={false}
-      >
+      <Badge tone="gray" dot={false}>
         No sports assigned
       </Badge>
     );
@@ -247,15 +340,20 @@ function SportTags({ sports }) {
 }
 
 export default function VenueSetupPage() {
-  const {
-    showToast,
-  } = useToast();
+  const { showToast } = useToast();
 
   const live = useDisclosure(false);
   const pitchModal = useDisclosure(false);
   const slotModal = useDisclosure(false);
+  const generateSlotsModal = useDisclosure(false);
 
-  const [pitches, setPitches] = useState(INITIAL_PITCHES);
+  const [venues, setVenues] = useState([]);
+  const [selectedVenueId, setSelectedVenueId] = useState(null);
+  const [venueData, setVenueData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+
+  const [pitches, setPitches] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [pitchDraft, setPitchDraft] = useState({
     name: '',
@@ -263,12 +361,8 @@ export default function VenueSetupPage() {
     sports: ['Football'],
   });
 
-  const [deposit, setDeposit] = useState('30% deposit allowed');
-  const [policy, setPolicy] = useState(
-    'Free cancel until 24h before · 50% within 24h · no refund within 6h',
-  );
-  const [allowSplit, setAllowSplit] = useState(true);
-
+  const [deposit, setDeposit] = useState('THIRTY_PERCENT');
+  const [policy, setPolicy] = useState('FREE_24H_50_6H');
   const [slotDraft, setSlotDraft] = useState({
     sport: 'football',
     duration: '90',
@@ -277,6 +371,342 @@ export default function VenueSetupPage() {
   });
 
   const [sportPricing, setSportPricing] = useState(INITIAL_SPORT_PRICING);
+
+  const [photos, setPhotos] = useState([]);
+  const [amenities, setAmenities] = useState(INITIAL_AMENITIES);
+  const [rules, setRules] = useState(INITIAL_RULES);
+  const [customRuleText, setCustomRuleText] = useState('');
+  const [savingAmenities, setSavingAmenities] = useState(false);
+
+  function toggleAmenity(id) {
+    setAmenities((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, on: !item.on } : item)),
+    );
+  }
+
+  function toggleRule(id) {
+    setRules((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, on: !item.on } : item)),
+    );
+  }
+
+  function handleAddCustomRule() {
+    if (!customRuleText.trim()) return;
+    const newRule = {
+      id: `rule-${Date.now()}`,
+      label: `📌 ${customRuleText.trim()}`,
+      on: true,
+    };
+    setRules((prev) => [...prev, newRule]);
+    setCustomRuleText('');
+  }
+
+  /** Writes the selected amenity keys and rule text to the venue. */
+  async function saveAmenitiesAndRules() {
+    const vId = selectedVenueId || venueData?.id;
+    if (!vId) {
+      showToast('Select a venue first');
+      return;
+    }
+    setSavingAmenities(true);
+    try {
+      await updateVenue(vId, {
+        amenities: amenities.filter((a) => a.on).map((a) => a.id).join(','),
+        rules: rules.filter((r) => r.on).map((r) => r.label).join(','),
+      });
+      showToast('Amenities & rules saved ✓');
+      refreshVenueDetails(vId);
+    } catch (error) {
+      showToast(toUserMessage(error, 'Could not save amenities and rules.'));
+    } finally {
+      setSavingAmenities(false);
+    }
+  }
+
+  const [generateDraft, setGenerateDraft] = useState({
+    pitchId: '',
+    startDate: '',
+    endDate: '',
+    startTime: '06:00',
+    endTime: '23:00',
+    slotDurationMinutes: 60,
+    basePrice: 2000
+  });
+
+  const [previewFile, setPreviewFile] = useState(null);
+  const editFileInputRef = useRef(null);
+  const [editingPhotoId, setEditingPhotoId] = useState(null);
+  const [deactivatingPitchId, setDeactivatingPitchId] = useState(null);
+
+  async function handleGenerateSlots() {
+    try {
+      const created = await apiGenerateSlots(generateDraft);
+      const count = Array.isArray(created) ? created.length : null;
+      showToast(count == null ? 'Slots generated ✓' : `${count} slot${count === 1 ? '' : 's'} generated ✓`);
+      generateSlotsModal.close();
+    } catch (error) {
+      showToast(toUserMessage(error, 'Failed to generate slots'));
+    }
+  }
+
+  const refreshVenueDetails = useCallback((vId) => {
+    if (!vId) return;
+    setLoading(true);
+    getOwnerVenue(vId)
+      .then((res) => {
+        if (res) {
+          setVenueData(res);
+          setDeposit(res.depositPolicy || 'THIRTY_PERCENT');
+          setPolicy(res.cancelPolicy || 'FREE_24H_50_6H');
+          setAmenities(hydrateSelection(INITIAL_AMENITIES, res.amenities, (item) => item.id));
+          setRules(hydrateSelection(INITIAL_RULES, res.rules, (item) => item.label));
+
+          if (Array.isArray(res.photos) && res.photos.length > 0) {
+            setPhotos(res.photos.map((url, idx) => ({ id: String(idx), url, name: `Photo ${idx + 1}` })));
+          } else {
+            setPhotos([]);
+          }
+
+          if (Array.isArray(res.pitches)) {
+            setPitches(res.pitches.map((p) => ({
+              id: p.id,
+              name: p.name,
+              desc: [p.surfaceType, p.dimensions].filter(Boolean).join(' · ') || 'No surface or size recorded',
+              sports: (p.sportSlugs && p.sportSlugs.length > 0)
+                ? p.sportSlugs.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+                : [],
+            })));
+          } else {
+            setPitches([]);
+          }
+
+          if (Array.isArray(res.pricingRules) && res.pricingRules.length > 0) {
+            setSportPricing(res.pricingRules.map((rule) => ({
+              id: rule.sportSlug || 'football',
+              title: `${rule.sportSlug ? rule.sportSlug.charAt(0).toUpperCase() + rule.sportSlug.slice(1) : 'Football'}`,
+              tone: rule.sportSlug === 'cricket' ? 'amber' : rule.sportSlug === 'futsal' ? 'green' : 'blue',
+              duration: String(rule.slotDurationMin || 60),
+              buffer: '10',
+              basePrice: Number(rule.rate || 2000),
+            })));
+          }
+        }
+      })
+      .catch((error) => {
+        // Failing silently left the owner editing default values that had never
+        // been loaded, so a later save could overwrite real settings with them.
+        setLoadError(toUserMessage(error, 'Could not load this venue. Reload to try again.'));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, []);
+
+  const getActiveVenueId = useCallback(async () => {
+    if (selectedVenueId) return selectedVenueId;
+    if (venues.length > 0 && venues[0].id) {
+      setSelectedVenueId(venues[0].id);
+      return venues[0].id;
+    }
+    try {
+      const res = await listMyVenues();
+      const venueList = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+      if (venueList.length > 0 && venueList[0].id) {
+        setVenues(venueList);
+        const vId = venueList[0].id;
+        setSelectedVenueId(vId);
+        refreshVenueDetails(vId);
+        return vId;
+      } else {
+        const created = await createVenue({
+          name: 'My Venue',
+          area: 'Dhanmondi',
+          address: 'Dhanmondi',
+          lat: 23.8103,
+          lng: 90.4125,
+          basePrice: 2000,
+          openTime: '06:00',
+          closeTime: '23:00',
+        });
+        const newV = created?.data || created;
+        if (newV && newV.id) {
+          setVenues([newV]);
+          setSelectedVenueId(newV.id);
+          refreshVenueDetails(newV.id);
+          return newV.id;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to resolve active venue', err);
+    }
+    return null;
+  }, [selectedVenueId, venues, refreshVenueDetails]);
+
+  /**
+   * Retiring a pitch is a soft deactivate on the server: the row and its history
+   * stay, it simply stops being offered. The wording says so rather than
+   * promising a delete that does not happen.
+   */
+  async function handleDeactivatePitch(pitch) {
+    if (deactivatingPitchId) return;
+    const vId = await getActiveVenueId();
+    if (!vId) return;
+    const ok = window.confirm(
+      `Retire “${pitch.name}”?\n\nIt stops being offered for new bookings. Existing bookings and history are kept.`,
+    );
+    if (!ok) return;
+    setDeactivatingPitchId(pitch.id);
+    try {
+      await deactivatePitch(vId, pitch.id);
+    } catch (error) {
+      showToast(toUserMessage(error, 'Could not retire this pitch.'));
+      return;
+    } finally {
+      setDeactivatingPitchId(null);
+    }
+    showToast(`${pitch.name} retired — no longer bookable ✓`);
+    refreshVenueDetails(vId);
+  }
+
+  async function handlePhotoUpload(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    const vId = await getActiveVenueId();
+    if (!vId) {
+      showToast('Initializing venue details, please try again');
+      return;
+    }
+
+    let uploaded = 0;
+    for (const file of files) {
+      try {
+        const res = await uploadVenuePhotoApi(vId, file);
+        if (res?.url) {
+          uploaded++;
+          setPhotos((prev) => [
+            ...prev,
+            { id: String(Date.now() + Math.random()), url: res.url, name: file.name },
+          ]);
+        }
+      } catch {
+        showToast(`Failed to upload ${file.name}`);
+      }
+    }
+
+    if (uploaded > 0) {
+      showToast(`${uploaded} venue photo(s) uploaded successfully ✓`);
+      refreshVenueDetails(vId);
+    }
+  }
+
+  async function handleEditPhotoUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file || !editingPhotoId) return;
+
+    const vId = await getActiveVenueId();
+    if (!vId) return;
+
+    try {
+      const res = await uploadVenuePhotoApi(vId, file);
+      if (res?.url) {
+        const newPhotos = photos.map(p => (p.id === editingPhotoId || p.url === editingPhotoId) ? { ...p, url: res.url, name: file.name } : p);
+        await updateVenue(vId, { photos: newPhotos.map(p => p.url || p) });
+        setPhotos(newPhotos);
+        showToast('Photo replaced successfully ✓');
+        // Clear input so same file can be selected again
+        event.target.value = null;
+      }
+    } catch {
+      showToast(`Failed to replace photo`);
+    }
+  }
+
+  async function handleDeletePhoto(photoId) {
+    if (photos.length <= 3) {
+      showToast('A minimum of 3 venue photos are required');
+      return;
+    }
+
+    const vId = await getActiveVenueId();
+    if (!vId) return;
+
+    const newPhotos = photos.filter(p => p.id !== photoId && p.url !== photoId);
+    try {
+      await updateVenue(vId, { photos: newPhotos.map(p => p.url || p) });
+      setPhotos(newPhotos);
+      showToast('Photo deleted ✓');
+    } catch {
+      showToast('Failed to delete photo');
+    }
+  }
+
+  useEffect(() => {
+    let unmounted = false;
+    listMyVenues()
+      .then((res) => {
+        const venueList = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+        if (!unmounted && venueList.length > 0) {
+          setVenues(venueList);
+          const initialId = venueList[0].id;
+          setSelectedVenueId(initialId);
+          refreshVenueDetails(initialId);
+        } else if (!unmounted) {
+          // If no venue in database yet, fall back to owner's submitted turf request info
+          getMyTurfRequests()
+            .then((reqRes) => {
+              const reqList = Array.isArray(reqRes?.data) ? reqRes.data : (Array.isArray(reqRes) ? reqRes : []);
+              if (!unmounted && reqList.length > 0) {
+                const req = reqList[0];
+                const fallbackVenue = {
+                  id: req.venueId || null,
+                  name: req.venueName || 'My Venue',
+                  status: req.status === 'APPROVED' ? 'APPROVED' : req.status === 'REJECTED' ? 'REJECTED' : 'PENDING',
+                  verified: req.status === 'APPROVED',
+                  area: req.area || null,
+                  openTime: null,
+                  closeTime: null,
+                };
+                setVenues([fallbackVenue]);
+                if (fallbackVenue.id) {
+                  setSelectedVenueId(fallbackVenue.id);
+                  refreshVenueDetails(fallbackVenue.id);
+                }
+                setVenueData(fallbackVenue);
+                setPitches([]);
+
+                if (req.photosJson) {
+                  try {
+                    const parsed = JSON.parse(req.photosJson);
+                    if (Array.isArray(parsed)) {
+                      setPhotos(parsed.map((url, idx) => ({ id: String(idx), url, name: `Photo ${idx + 1}` })));
+                    }
+                  } catch {
+                    // Ignore JSON parsing errors for photos
+                  }
+                }
+              }
+            })
+            .catch(() => {
+              // Ignore turf request fetch errors
+            });
+        }
+      })
+      .catch(() => {
+        // Ignore venue list fetch errors
+      })
+      .finally(() => {
+        if (!unmounted) setLoading(false);
+      });
+    return () => {
+      unmounted = true;
+    };
+  }, [refreshVenueDetails]);
+
+  function handleVenueChange(id) {
+    setSelectedVenueId(id);
+    refreshVenueDetails(id);
+  }
 
   function openSlotSettings() {
     const current = sportPricing[0];
@@ -291,6 +721,7 @@ export default function VenueSetupPage() {
 
   function selectSlotSport(id) {
     const current = sportPricing.find((sport) => sport.id === id);
+    if (!current) return;
     setSlotDraft({
       sport: id,
       duration: current.duration,
@@ -301,25 +732,21 @@ export default function VenueSetupPage() {
 
   function openAddPitch() {
     setEditingId(null);
-
     setPitchDraft({
       name: '',
       desc: '',
       sports: ['Football'],
     });
-
     pitchModal.open();
   }
 
   function openEditPitch(pitch) {
     setEditingId(pitch.id);
-
     setPitchDraft({
       name: pitch.name,
       desc: pitch.desc,
       sports: pitch.sports,
     });
-
     pitchModal.open();
   }
 
@@ -332,599 +759,698 @@ export default function VenueSetupPage() {
     }));
   }
 
-  function savePitch() {
+  async function savePitch() {
     const name = pitchDraft.name.trim() || 'New Pitch';
-    const desc = pitchDraft.desc.trim() || 'Standard turf court';
+    const desc = pitchDraft.desc.trim();
 
-    if (editingId) {
-      setPitches((current) =>
-        current.map((pitch) =>
-          pitch.id === editingId ? { ...pitch, name, desc, sports: pitchDraft.sports } : pitch,
-        ),
-      );
-      showToast('Pitch details updated ✓');
-    } else {
-      setPitches((current) => [...current, {
-        id: Date.now(),
-        name,
-        desc,
-        sports: pitchDraft.sports,
-      }]);
-      showToast('New pitch added with sport assignments ✓');
+    const vId = await getActiveVenueId();
+    if (!vId) {
+      showToast('Initializing venue details, please try again');
+      return;
     }
 
-    pitchModal.close();
+    try {
+      const sportSlugs = pitchDraft.sports.map((s) => s.toLowerCase());
+      if (editingId) {
+        await updatePitch(vId, editingId, {
+          name,
+          surfaceDetail: desc,
+          sportSlugs,
+        });
+        setPitches((prev) =>
+          prev.map((p) => (p.id === editingId ? { ...p, name, desc, sports: pitchDraft.sports } : p))
+        );
+        showToast('Pitch details updated ✓');
+      } else {
+        const created = await addPitch(vId, {
+          name,
+          format: '7-a-side',
+          surfaceType: 'ARTIFICIAL_TURF',
+          surfaceDetail: desc,
+          dimensions: '30×50 m',
+          lighting: 'FLOODLIT',
+          maxPlayers: 14,
+          indoor: false,
+          sportSlugs,
+        });
+        const createdPitch = created?.data || created;
+        const newPitchObj = {
+          id: createdPitch?.id || Date.now(),
+          name: createdPitch?.name || name,
+          desc: [createdPitch?.surfaceType, createdPitch?.dimensions].filter(Boolean).join(' · ') || desc,
+          sports: (createdPitch?.sportSlugs && createdPitch.sportSlugs.length > 0)
+            ? createdPitch.sportSlugs.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+            : pitchDraft.sports,
+        };
+        setPitches((prev) => [...prev.filter((p) => p.id !== newPitchObj.id), newPitchObj]);
+        showToast('New pitch added to venue ✓');
+      }
+      refreshVenueDetails(vId);
+      pitchModal.close();
+      return;
+    } catch (err) {
+      showToast(err?.data?.message || err?.message || 'Failed to save pitch details');
+    }
   }
 
-  function saveSlotSettings() {
+  async function saveDepositSection() {
+    const vId = await getActiveVenueId();
+    if (!vId) {
+      showToast('No venue to save against yet.');
+      return;
+    }
+    try {
+      await updateVenue(vId, {
+        depositPolicy: deposit,
+        cancelPolicy: policy,
+      });
+    } catch (error) {
+      // This used to swallow the failure and toast success anyway, so an
+      // owner believed a cancellation policy was saved that never was.
+      showToast(toUserMessage(error, 'Could not save the deposit & cancellation section.'));
+      return;
+    }
+    showToast('Deposit & cancellation section saved ✓');
+    refreshVenueDetails(vId);
+  }
+
+  async function saveSlotSettings() {
     const basePrice = Math.max(0, Math.round(Number(String(slotDraft.basePrice).replace(/[^\d.]/g, '')) || 0));
     if (!basePrice) {
       showToast('Enter a base price for this sport');
       return;
     }
-    setSportPricing((current) =>
-      current.map((sport) =>
-        sport.id === slotDraft.sport
-          ? { ...sport, duration: slotDraft.duration, buffer: slotDraft.buffer, basePrice }
-          : sport,
-      ),
-    );
-    showToast(`Base price saved — TurfChai will price each slot around ${bdt(basePrice)} ✓`);
+    const vId = await getActiveVenueId();
+    if (vId) {
+      try {
+        await upsertPricingRule(vId, {
+          sportSlug: (slotDraft.sport || 'football').toLowerCase(),
+          windowType: 'full_day',
+          rate: basePrice,
+          slotDurationMin: Number(slotDraft.duration) || 60,
+          bufferMin: Number(slotDraft.buffer) || 10,
+          windowStart: '06:00',
+          windowEnd: '23:00',
+          active: true,
+        });
+        showToast(`Pricing rule saved for ${slotDraft.sport} ✓`);
+        refreshVenueDetails(vId);
+        slotModal.close();
+        return;
+      } catch {
+        showToast('Failed to save pricing rule');
+      }
+    }
     slotModal.close();
   }
 
+  async function handleGoLive() {
+    const vId = await getActiveVenueId();
+    if (!vId) return;
+
+    const isApprovedOrVerified = venueData?.verified || venueData?.status === 'APPROVED' || venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED' || venueData?.status === 'PENDING_LISTING';
+    if (!isApprovedOrVerified) {
+      showToast('Verification Pending — Please wait for admin approval before going live');
+      return;
+    }
+
+    const isCurrentlyLive = venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED';
+    const nextStatus = isCurrentlyLive ? 'PENDING_LISTING' : 'LIVE';
+
+    try {
+      const updated = await updateVenueStatus(vId, nextStatus);
+      if (updated && updated.status) {
+        setVenueData((prev) => (prev ? { ...prev, status: updated.status } : updated));
+      } else {
+        setVenueData((prev) => (prev ? { ...prev, status: nextStatus } : null));
+      }
+      showToast(nextStatus === 'LIVE' ? 'Turf is now LIVE & visible to players ✓' : 'Turf is set to Offline ✓');
+      refreshVenueDetails(vId);
+      if (nextStatus === 'LIVE') {
+        live.open();
+      }
+    } catch {
+      showToast('Failed to update venue live status');
+    }
+  }
+
+  const hoursList = [
+    { id: 'open', label: 'OPEN', value: venueData?.openTime || '—' },
+    { id: 'close', label: 'CLOSE', value: venueData?.closeTime || '—' },
+    { id: 'buffer', label: 'BUFFER', value: '10 min' },
+  ];
+
+  // The bar used to read 83% for every unpublished venue and 100% once
+  // published, regardless of what the owner had actually filled in.
+  const setupSections = (() => {
+    const checks = [
+      Boolean(venueData?.name && venueData?.area),
+      photos.length > 0,
+      pitches.length > 0,
+      sportPricing.some((sport) => Number(sport.basePrice) > 0),
+      Boolean(venueData?.openTime && venueData?.closeTime),
+      // Read from the saved venue, not the on-screen toggles. This used to count
+      // hardcoded defaults, so it passed for every venue before anything was set.
+      parseCsv(venueData?.amenities).length > 0 || parseCsv(venueData?.rules).length > 0,
+    ];
+    const done = checks.filter(Boolean).length;
+    return { done, total: checks.length, percent: Math.round((done / checks.length) * 100) };
+  })();
+
   return (
     <>
-      <PageTitle
-        title="Venue setup"
-      />
+      <PageTitle title="Venue setup" />
 
-      <div
-        style={{
-          maxWidth: 1040,
-        }}
-      >
-        <Alert
-          tone="ok"
-          icon="✓"
-          title="Approved! Kick Off Arena is a pending listing."
-          style={{
-            marginBottom: 16,
-          }}
-        >
-          Complete the profile below, then press <b>Go Live</b> to start taking bookings.
-        </Alert>
-
-        <div
-          className="between"
-          style={{
-            flexWrap: 'wrap',
-            gap: 10,
-            marginBottom: 16,
-          }}
-        >
-          <div>
-            <h1
-              style={{
-                fontSize: 24,
-                marginBottom: 2,
-              }}
-            >
-              Venue setup · Kick Off Arena
-            </h1>
-
-            <span className="row-wrap">
-              <Badge tone="amber">Pending — not visible to players</Badge>
-
-              <span
-                className="subtle small"
-              >
-                5 of 6 sections complete
-              </span>
-            </span>
+      <div style={{ maxWidth: 1040 }}>
+        {loading ? (
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>
+            Loading venue details...
           </div>
-
-          <div className="row">
-            <div
-              className="progress"
-              style={{
-                width: 160,
-              }}
-            >
-              <i
-                style={{
-                  width: '83%',
-                }}
-              />
-            </div>
-
-            <b
-              className="num small"
-            >
-              83%
-            </b>
-          </div>
-        </div>
-
-        <div
-          className="grid2"
-          style={{
-            alignItems: 'start',
-          }}
-        >
-          <div className="stack">
-            <section className="card">
-              <div className="between">
-                <h3
-                  style={{
-                    margin: 0,
-                  }}
-                >
-                  📷 Photos
-                </h3>
-
-                <Badge
-                  tone="green"
-                  dot={false}
-                >
-                  Done
-                </Badge>
-              </div>
-
-              <div
-                className="row"
-                style={{
-                  marginTop: 10,
-                }}
-              >
-                {PHOTOS.map((photo) => (
-                  <Photo
-                    key={photo.id}
-                    variant={photo.variant}
-                    glyph={photo.glyph}
-                    style={PHOTO_TILE}
-                  />
-                ))}
-
-                <IconButton
-                  label="Add photo"
-                  style={{
-                    ...PHOTO_TILE,
-                    fontSize: 22,
-                  }}
-                  onClick={() => showToast('Add photo 📷')}
-                >
-                  +
-                </IconButton>
-              </div>
-            </section>
-
-            <section className="card">
-              <div className="between">
-                <h3
-                  style={{
-                    margin: 0,
-                  }}
-                >
-                  🥅 Pitches &amp; Sport Assignment
-                </h3>
-
-                <Badge
-                  tone="green"
-                  dot={false}
-                >
-                  {pitches.length} added
-                </Badge>
-              </div>
-
-              <p
-                className="subtle small"
-                style={{
-                  margin: '6px 0 10px',
-                }}
-              >
-                Assign specific pitches to one or multiple sports
-              </p>
-
-              <div
-                className="stack-sm"
-                style={{
-                  marginTop: 10,
-                }}
-              >
-                {pitches.map((pitch) => (
-                  <div
-                    className="panel between"
-                    key={pitch.id}
-                  >
-                    <div>
-                      <b className="small">{pitch.name}</b>
-
-                      <div className="tiny subtle">{pitch.desc}</div>
-
-                      <div
-                        className="row-wrap sports-tags"
-                        style={{
-                          gap: 4,
-                          marginTop: 6,
-                        }}
-                      >
-                        <SportTags sports={pitch.sports} />
-                      </div>
-                    </div>
-
-                    <Button
-                      size="sm"
-                      variant="tertiary"
-                      onClick={() => openEditPitch(pitch)}
-                    >
-                      Edit
-                    </Button>
-                  </div>
-                ))}
-              </div>
-
-              <Button
-                size="sm"
-                style={{
-                  marginTop: 10,
-                }}
-                onClick={openAddPitch}
-              >
-                + Add pitch
-              </Button>
-            </section>
-
-            <section className="card">
-              <div className="between">
-                <h3
-                  style={{
-                    margin: 0,
-                  }}
-                >
-                  💰 Pricing &amp; Slot Durations by Sport
-                </h3>
-
-                <Badge
-                  tone="green"
-                  dot={false}
-                >
-                  Configured
-                </Badge>
-              </div>
-
-              <p
-                className="subtle small"
-                style={{
-                  margin: '6px 0 10px',
-                }}
-              >
-                Set one base price per sport. TurfChai prices each slot around it automatically —
-                peak evenings, weekends, holidays, weather and how full the pitch already is.
-              </p>
-
-              <div
-                className="grid2"
-                style={{
-                  gap: 8,
-                  marginBottom: 12,
-                }}
-              >
-                {sportPricing.map((sport) => (
-                  <div
-                    className="panel between"
-                    key={sport.id}
-                  >
-                    <div>
-                      <b className="small">{sport.title}</b>
-
-                      <div className="tiny subtle">
-                        {sport.duration} min slots · {sport.buffer}m buffer
-                      </div>
-                    </div>
-
-                    <Badge
-                      tone={sport.tone}
-                      dot={false}
-                      style={sport.style}
-                    >
-                      {bdt(sport.basePrice)} base
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Sport</th>
-
-                      <th>Slot duration</th>
-
-                      <th>Handover buffer</th>
-
-                      <th className="num">Base price</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {sportPricing.map((sport) => (
-                      <tr key={sport.id}>
-                        <td>{sport.title}</td>
-
-                        <td>{sport.duration} min</td>
-
-                        <td>{sport.buffer} min</td>
-
-                        <td className="num">{bdt(sport.basePrice)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
+        ) : loadError ? (
+          <Alert tone="danger" icon="⚠️" title="Venue details could not be loaded">
+            {loadError} Editing now would save default values over your real settings.
+          </Alert>
+        ) : (
+          <>
+            {venueData?.status === 'PUBLISHED' || venueData?.status === 'LIVE' ? (
               <Alert
-                tone="info"
-                icon="🤖"
-                title="Peak and off-peak are set for you"
-                style={{
-                  marginTop: 12,
-                }}
+                tone="ok"
+                icon="🟢"
+                title={`${venueData?.name || 'Venue'} is LIVE & Bookable`}
+                style={{ marginBottom: 16, borderLeft: '4px solid #10b981', background: 'rgba(16, 185, 129, 0.08)' }}
               >
-                The pricing model adjusts every slot from your base price using the hour, day,
-                public holidays, how far ahead the booking is, live occupancy and the forecast for
-                your turf&apos;s exact location.
+                Your venue is live and visible to all players! Players can browse pitches and book slots in real time.
               </Alert>
-
-              <Button
-                size="sm"
-                style={{
-                  marginTop: 10,
-                }}
-                onClick={openSlotSettings}
+            ) : venueData?.verified || venueData?.status === 'APPROVED' || venueData?.status === 'PENDING_LISTING' ? (
+              <Alert
+                tone="ok"
+                icon="✓"
+                title={`${venueData?.name || 'Venue'} is Verified & Approved`}
+                style={{ marginBottom: 16 }}
               >
-                Edit slot durations &amp; base prices
-              </Button>
-            </section>
-
-            <section className="card">
-              <div className="between">
-                <h3
-                  style={{
-                    margin: 0,
-                  }}
-                >
-                  🕐 Operating hours &amp; buffer
-                </h3>
-
-                <Badge
-                  tone="green"
-                  dot={false}
-                >
-                  Done
-                </Badge>
-              </div>
-
-              <div
-                className="grid3"
-                style={{
-                  marginTop: 10,
-                  gap: 10,
-                }}
+                Your venue has been verified and approved by admin! You can now toggle <b>Go Live</b> to start accepting player bookings.
+              </Alert>
+            ) : venueData?.status === 'REJECTED' ? (
+              <Alert
+                tone="danger"
+                icon="✕"
+                title="Application Rejected"
+                style={{ marginBottom: 16 }}
               >
-                {HOURS.map((item) => (
-                  <div
-                    className="panel"
-                    key={item.id}
-                  >
-                    <span className="tiny subtle">{item.label}</span>
-
-                    <br />
-
-                    <b className="num">{item.value}</b>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          <div className="stack">
-            <section className="card">
-              <div className="between">
-                <h3
-                  style={{
-                    margin: 0,
-                  }}
-                >
-                  🧾 Deposit &amp; cancellation
-                </h3>
-
-                <Badge
-                  tone="red"
-                  dot={false}
-                >
-                  Incomplete
-                </Badge>
-              </div>
-
-              <div
-                className="field"
-                style={{
-                  marginTop: 10,
-                }}
+                Your venue application was rejected by the admin team. Please contact support or submit updated documents.
+              </Alert>
+            ) : (
+              <Alert
+                tone="warn"
+                icon="⏳"
+                title="Verification Pending — Admin Review in Progress"
+                style={{ marginBottom: 16 }}
               >
-                <label>Booking deposit</label>
+                Your venue application and submitted details are currently under review by our admin team.
+                You can configure your pitches, photos, and pricing rules below. Once verified and approved by admin, your venue will go <b>LIVE</b> for player bookings.
+              </Alert>
+            )}
 
-                <div className="row-wrap">
-                  {DEPOSIT_OPTIONS.map((option) => (
-                    <Chip
-                      key={option}
-                      active={deposit === option}
-                      onToggle={() => setDeposit(option)}
+            <div className="between" style={{ flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+              <div>
+                <h1 style={{ fontSize: 24, marginBottom: 2 }}>
+                  Venue setup · {venueData?.name || 'My Venue'}
+                </h1>
+
+                <div className="row-wrap" style={{ gap: 8, alignItems: 'center' }}>
+                  {venues.length > 1 && (
+                    <Select
+                      value={selectedVenueId || ''}
+                      onChange={(e) => handleVenueChange(Number(e.target.value))}
+                      style={{ marginRight: 8 }}
                     >
-                      {option}
-                    </Chip>
-                  ))}
+                      {venues.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name}
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                  <Badge tone={venueData?.status === 'PUBLISHED' || venueData?.status === 'LIVE' ? 'green' : (venueData?.status === 'APPROVED' || venueData?.status === 'PENDING_LISTING' || venueData?.verified) ? 'blue' : venueData?.status === 'REJECTED' ? 'red' : 'amber'}>
+                    {venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED' ? '🟢 LIVE · Bookable by Players' : (venueData?.status === 'APPROVED' || venueData?.status === 'PENDING_LISTING' || venueData?.verified) ? '✓ Verified · Ready to Go Live' : venueData?.status === 'REJECTED' ? '✕ Rejected' : '⏳ Pending — not visible to players'}
+                  </Badge>
+
+                  <span className="subtle small">
+                    {setupSections.done} of {setupSections.total} sections complete
+                  </span>
                 </div>
               </div>
 
-              <Field
-                label="Cancellation policy"
-                htmlFor="cxl"
-              >
-                <Select
-                  id="cxl"
-                  value={policy}
-                  onChange={(event) => setPolicy(event.target.value)}
-                >
-                  <option>Choose a policy…</option>
-
-                  <option>Free cancel until 24h before · 50% within 24h · no refund within 6h</option>
-
-                  <option>Flexible — free cancel until 6h before</option>
-
-                  <option>Strict — deposits non-refundable</option>
-                </Select>
-              </Field>
-
-              <Checkline
-                label="Allow players to split payment with teammates"
-                checked={allowSplit}
-                onChange={(event) => setAllowSplit(event.target.checked)}
-              />
-
-              <Button
-                size="sm"
-                variant="primary"
-                style={{
-                  marginTop: 10,
-                }}
-                onClick={() => showToast('Section saved ✓')}
-              >
-                Save section
-              </Button>
-            </section>
-
-            <section className="card">
-              <div className="between">
-                <h3
-                  style={{
-                    margin: 0,
-                  }}
-                >
-                  📋 Amenities &amp; rules
-                </h3>
-
-                <Badge
-                  tone="green"
-                  dot={false}
-                >
-                  Done
-                </Badge>
+              <div className="row">
+                <div className="progress" style={{ width: 160 }}>
+                  <i style={{ width: `${setupSections.percent}%` }} />
+                </div>
+                <b className="num small">{setupSections.percent}%</b>
               </div>
-
-              <div
-                className="row-wrap"
-                style={{
-                  marginTop: 10,
-                }}
-              >
-                {AMENITIES.map((amenity) => (
-                  <span
-                    className={amenity.on ? 'chip on' : 'chip'}
-                    key={amenity.id}
-                  >
-                    {amenity.label}
-                  </span>
-                ))}
-              </div>
-
-              <p
-                className="small muted"
-                style={{
-                  margin: '10px 0 0',
-                }}
-              >
-                Rules: turf shoes only · no smoking · arrive 10 min early for handover.
-              </p>
-            </section>
-
-            <div
-              className="glass glass-card center"
-            >
-              <h3>Ready to go live?</h3>
-
-              <p
-                className="subtle small"
-                style={{
-                  margin: '4px 0 12px',
-                }}
-              >
-                Complete the deposit &amp; cancellation section, then your slots open to every player on TurfChai
-                instantly.
-              </p>
-
-              <Button
-                variant="primary"
-                size="lg"
-                block
-                onClick={live.open}
-              >
-                🚀 Go Live
-              </Button>
-
-              <Button
-                variant="tertiary"
-                block
-                to={paths.player.venue('kick-off-arena')}
-                style={{
-                  marginTop: 8,
-                }}
-              >
-                Preview player view
-              </Button>
             </div>
-          </div>
-        </div>
+
+            <div className="grid2" style={{ alignItems: 'start' }}>
+              <div className="stack">
+                <section className="card">
+                  <div className="between">
+                    <h3 style={{ margin: 0 }}>📷 Photos</h3>
+                    <Badge tone="green" dot={false}>
+                      Done
+                    </Badge>
+                  </div>
+
+                  <div className="row" style={{ marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
+                    {photos.length > 0 ? (
+                      photos.map((p) => (
+                        <div key={p.id || p.name || p.url} style={{ position: 'relative' }}>
+                          <div style={{ cursor: 'pointer' }} onClick={() => setPreviewFile(p)} title="Click to view full image">
+                            <img
+                              src={p.url || p}
+                              alt={p.name || 'Venue Photo'}
+                              style={{
+                                width: 72,
+                                height: 72,
+                                objectFit: 'cover',
+                                borderRadius: 8,
+                                border: '1px solid var(--border-soft)',
+                              }}
+                            />
+                          </div>
+                          <div style={{ position: 'absolute', top: -6, right: -6, display: 'flex', gap: 2, background: 'rgba(0,0,0,0.7)', padding: 2, borderRadius: 12, boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }}>
+                            <button
+                              type="button"
+                              title="Replace photo"
+                              onClick={(e) => { e.stopPropagation(); setEditingPhotoId(p.id || p.url); editFileInputRef.current?.click(); }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff', fontSize: 11, padding: '2px 4px' }}
+                            >✏️</button>
+                            <button
+                              type="button"
+                              title="Delete photo"
+                              onClick={(e) => { e.stopPropagation(); handleDeletePhoto(p.id || p.url); }}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ff5555', fontSize: 11, padding: '2px 4px' }}
+                            >✖</button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="subtle small" style={{ display: 'inline-flex', alignItems: 'center', padding: '0 8px' }}>
+                        No photos uploaded yet. Upload venue photos to showcase your turf.
+                      </div>
+                    )}
+
+                    <label
+                      style={{
+                        ...PHOTO_TILE,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: 8,
+                        border: '1px dashed var(--border-medium)',
+                        cursor: 'pointer',
+                        fontSize: 22,
+                        background: 'rgba(255,255,255,0.02)',
+                      }}
+                    >
+                      +
+                      <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={handlePhotoUpload} />
+                    </label>
+
+                    <input type="file" accept="image/*" ref={editFileInputRef} style={{ display: 'none' }} onChange={handleEditPhotoUpload} />
+                  </div>
+                </section>
+
+                <section className="card">
+                  <div className="between">
+                    <h3 style={{ margin: 0 }}>🥅 Pitches &amp; Sport Assignment</h3>
+                    <Badge tone="green" dot={false}>
+                      {pitches.length} added
+                    </Badge>
+                  </div>
+
+                  <p className="subtle small" style={{ margin: '6px 0 10px' }}>
+                    Assign specific pitches to one or multiple sports
+                  </p>
+
+                  {pitches.length > 0 ? (
+                    <div className="stack-sm" style={{ marginTop: 10 }}>
+                      {pitches.map((pitch) => (
+                        <div className="panel between" key={pitch.id}>
+                          <div>
+                            <b className="small">{pitch.name}</b>
+                            <div className="tiny subtle">{pitch.desc}</div>
+                            <div className="row-wrap sports-tags" style={{ gap: 4, marginTop: 6 }}>
+                              <SportTags sports={pitch.sports} />
+                            </div>
+                          </div>
+
+                          <div className="row" style={{ gap: 6 }}>
+                            <Button size="sm" variant="tertiary" onClick={() => openEditPitch(pitch)}>
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghostDanger"
+                              disabled={deactivatingPitchId === pitch.id}
+                              onClick={() => handleDeactivatePitch(pitch)}
+                            >
+                              {deactivatingPitchId === pitch.id ? 'Retiring…' : 'Retire'}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '16px 0', color: 'var(--text-3)', fontSize: 14 }}>
+                      No pitches added yet. Add a pitch to get started.
+                    </div>
+                  )}
+
+                  <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
+                    <Button size="sm" onClick={openAddPitch}>
+                      + Add pitch
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={pitches.length === 0}
+                      title={pitches.length === 0 ? 'Add a pitch first' : 'Create bookable slots for a date range'}
+                      onClick={generateSlotsModal.open}
+                    >
+                      🗓️ Generate slots
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="card">
+                  <div className="between">
+                    <h3 style={{ margin: 0 }}>💰 Pricing &amp; Slot Durations by Sport</h3>
+                    <Badge tone="green" dot={false}>
+                      Configured
+                    </Badge>
+                  </div>
+
+                  <p className="subtle small" style={{ margin: '6px 0 10px' }}>
+                    Set one base price per sport. TurfChai prices each slot around it automatically.
+                  </p>
+
+                  <div className="grid2" style={{ gap: 10, marginBottom: 12 }}>
+                    {sportPricing.map((sport) => (
+                      <div
+                        className="panel"
+                        key={sport.id}
+                        onClick={() => {
+                          selectSlotSport(sport.id);
+                          slotModal.open();
+                        }}
+                        style={{
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: 8,
+                          padding: '12px 14px',
+                          minWidth: 0,
+                          transition: 'all 0.15s ease',
+                          border: '1px solid var(--border-soft)',
+                          borderRadius: 10,
+                          background: 'var(--surface-1)',
+                        }}
+                        title={`Click to edit ${sport.title} time duration, buffer & base price`}
+                      >
+                        <div style={{ flex: '1 1 120px', minWidth: 0 }}>
+                          <b className="small" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14 }}>
+                            {sport.title}
+                            <span style={{ fontSize: 11, opacity: 0.7 }}>✏️</span>
+                          </b>
+                          <div className="tiny subtle" style={{ marginTop: 2 }}>
+                            {sport.duration} min slots · {sport.buffer}m buffer
+                          </div>
+                        </div>
+
+                        <Badge
+                          tone={sport.tone}
+                          dot={false}
+                          style={{
+                            flexShrink: 0,
+                            whiteSpace: 'nowrap',
+                            fontSize: 13,
+                            fontWeight: 700,
+                            padding: '4px 10px',
+                            ...sport.style,
+                          }}
+                        >
+                          {bdt(sport.basePrice)} base
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Sport</th>
+                          <th>Slot duration</th>
+                          <th>Handover buffer</th>
+                          <th className="num">Base price</th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        {sportPricing.map((sport) => (
+                          <tr key={sport.id}>
+                            <td>{sport.title}</td>
+                            <td>{sport.duration} min</td>
+                            <td>{sport.buffer} min</td>
+                            <td className="num">{bdt(sport.basePrice)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <Alert tone="info" icon="🤖" title="Peak and off-peak are set for you" style={{ marginTop: 12 }}>
+                    The pricing model adjusts every slot from your base price using hour, day, and live occupancy.
+                  </Alert>
+
+                  <Button size="sm" style={{ marginTop: 10 }} onClick={openSlotSettings}>
+                    Edit slot durations &amp; base prices
+                  </Button>
+                </section>
+
+                <section className="card">
+                  <div className="between">
+                    <h3 style={{ margin: 0 }}>🕐 Operating hours &amp; buffer</h3>
+                    <Badge tone="green" dot={false}>
+                      Done
+                    </Badge>
+                  </div>
+
+                  <div className="grid3" style={{ marginTop: 10, gap: 10 }}>
+                    {hoursList.map((item) => (
+                      <div className="panel" key={item.id}>
+                        <span className="tiny subtle">{item.label}</span>
+                        <br />
+                        <b className="num">{item.value}</b>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <div className="stack">
+                <section className="card">
+                  <div className="between">
+                    <h3 style={{ margin: 0 }}>🧾 Deposit &amp; cancellation</h3>
+                    <Badge tone="green" dot={false}>
+                      Configured
+                    </Badge>
+                  </div>
+
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label>Booking deposit</label>
+                    <div className="row-wrap">
+                      {DEPOSIT_OPTIONS.map((option) => (
+                        <Chip
+                          key={option.value}
+                          active={deposit === option.value}
+                          onToggle={() => setDeposit(option.value)}
+                        >
+                          {option.label}
+                        </Chip>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Field label="Cancellation policy" htmlFor="cxl">
+                    <Select id="cxl" value={policy} onChange={(event) => setPolicy(event.target.value)}>
+                      {CANCEL_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+
+                  <Button size="sm" variant="primary" style={{ marginTop: 10 }} onClick={saveDepositSection}>
+                    Save section
+                  </Button>
+                </section>
+
+                <section className="card">
+                  <div className="between">
+                    <h3 style={{ margin: 0 }}>📋 Amenities &amp; Rules</h3>
+                    <Badge tone="green" dot={false}>
+                      {amenities.filter((a) => a.on).length} active
+                    </Badge>
+                  </div>
+
+                  <p className="subtle small" style={{ margin: '6px 0 10px' }}>
+                    Toggle what this venue offers, then save. Players see these on the venue page.
+                  </p>
+
+                  <div className="row-wrap" style={{ gap: 8, marginTop: 10 }}>
+                    {amenities.map((amenity) => (
+                      <Chip
+                        key={amenity.id}
+                        active={amenity.on}
+                        onToggle={() => toggleAmenity(amenity.id)}
+                        style={{ cursor: 'pointer', transition: 'all 0.15s ease' }}
+                      >
+                        {amenity.label}
+                      </Chip>
+                    ))}
+                  </div>
+
+                  <hr style={{ border: 0, borderTop: '1px solid var(--border-soft)', margin: '16px 0 12px' }} />
+
+                  <div className="between">
+                    <b className="small">Venue Rules</b>
+                    <span className="tiny subtle">Click rule to enable / disable</span>
+                  </div>
+
+                  <div className="stack-sm" style={{ marginTop: 8 }}>
+                    {rules.map((rule) => (
+                      <div
+                        key={rule.id}
+                        onClick={() => toggleRule(rule.id)}
+                        style={{
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          background: rule.on ? 'rgba(16, 185, 129, 0.08)' : 'var(--surface-1)',
+                          border: rule.on ? '1px solid rgba(16, 185, 129, 0.3)' : '1px dashed var(--border-medium)',
+                          opacity: rule.on ? 1 : 0.65,
+                          transition: 'all 0.15s ease',
+                        }}
+                        title="Click to toggle rule state"
+                      >
+                        <span className="small" style={{ textDecoration: rule.on ? 'none' : 'line-through' }}>
+                          {rule.label}
+                        </span>
+                        <Badge tone={rule.on ? 'green' : 'gray'} dot={false} style={{ fontSize: 11 }}>
+                          {rule.on ? 'Active' : 'Off'}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <Input
+                      placeholder="Add custom rule..."
+                      value={customRuleText}
+                      onChange={(e) => setCustomRuleText(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddCustomRule()}
+                      style={{ fontSize: 13 }}
+                    />
+                    <Button size="sm" variant="secondary" onClick={handleAddCustomRule} style={{ flexShrink: 0 }}>
+                      + Add
+                    </Button>
+                  </div>
+
+                  <Button
+                    variant="primary"
+                    block
+                    style={{ marginTop: 14 }}
+                    loading={savingAmenities}
+                    disabled={savingAmenities}
+                    onClick={saveAmenitiesAndRules}
+                  >
+                    Save amenities &amp; rules
+                  </Button>
+                </section>
+
+                <div className="glass glass-card center" style={{ border: (venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED') ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid var(--border-soft)' }}>
+                  <h3>{(venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED') ? '🟢 Venue is LIVE & Bookable' : 'Ready to go live?'}</h3>
+                  <p className="subtle small" style={{ margin: '4px 0 12px' }}>
+                    {(venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED')
+                      ? 'Your turf is currently active and accepting player bookings in real-time.'
+                      : 'Publish your venue to make slots instantly bookable by all players on TurfChai.'}
+                  </p>
+
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    block
+                    onClick={handleGoLive}
+                    style={{
+                      background: (venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED')
+                        ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)'
+                        : 'var(--brand)',
+                      borderColor: (venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED') ? '#059669' : 'var(--brand)',
+                      fontWeight: 600,
+                      boxShadow: (venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED') ? '0 4px 14px rgba(16, 185, 129, 0.4)' : 'none',
+                    }}
+                  >
+                    {(venueData?.status === 'LIVE' || venueData?.status === 'PUBLISHED')
+                      ? '🟢 Venue is LIVE (Click to Pause / Offline)'
+                      : '🚀 Go Live (Publish Venue)'}
+                  </Button>
+
+                  {/* Without a slug this used to preview a different venue entirely. */}
+                  <Button
+                    variant="tertiary"
+                    block
+                    to={venueData?.slug ? paths.player.venue(venueData.slug) : undefined}
+                    disabled={!venueData?.slug}
+                    title={venueData?.slug ? undefined : 'Save your venue first to preview how players will see it.'}
+                    style={{ marginTop: 8 }}
+                  >
+                    Preview player view
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <Overlay
         isOpen={live.isOpen}
         onClose={live.close}
-        title="Kick Off Arena is LIVE"
+        title={`${venueData?.name || 'Venue'} is LIVE`}
         hideHeader
         className="center"
       >
-        <div
-          className="check-anim"
-          aria-hidden="true"
-        >
+        <div className="check-anim" aria-hidden="true">
           🚀
         </div>
 
-        <h3>Kick Off Arena is LIVE</h3>
+        <h3>{venueData?.name || 'Venue'} is LIVE</h3>
 
-        <p
-          className="muted small"
-        >
+        <p className="muted small">
           Your slots are now bookable by 40,000+ players in Dhaka. First booking usually lands within 48 hours.
         </p>
 
-        <Badge
-          tone="green"
-          style={{
-            margin: '8px 0 14px',
-          }}
-        >
+        <Badge tone="green" style={{ margin: '8px 0 14px' }}>
           Live · visible in Explore
         </Badge>
 
-        <Button
-          variant="primary"
-          block
-          to={paths.owner.dashboard}
-        >
+        <Button variant="primary" block to={paths.owner.dashboard}>
           Open owner dashboard →
         </Button>
       </Overlay>
@@ -936,19 +1462,11 @@ export default function VenueSetupPage() {
         title={editingId ? 'Edit Pitch & Sport Assignment' : 'Add New Pitch & Assign Sports'}
         maxWidth={480}
       >
-        <p
-          className="subtle small"
-          style={{
-            margin: '4px 0 12px',
-          }}
-        >
+        <p className="subtle small" style={{ margin: '4px 0 12px' }}>
           Define pitch specifications and assign allowed sports for this pitch.
         </p>
 
-        <Field
-          label="Pitch Name"
-          htmlFor="pName"
-        >
+        <Field label="Pitch Name" htmlFor="pName">
           <Input
             id="pName"
             placeholder="e.g. Pitch 4 · 7-a-side"
@@ -957,10 +1475,7 @@ export default function VenueSetupPage() {
           />
         </Field>
 
-        <Field
-          label="Surface & Details"
-          htmlFor="pDesc"
-        >
+        <Field label="Surface & Details" htmlFor="pDesc">
           <Input
             id="pDesc"
             placeholder="e.g. Artificial grass · floodlit · 30×50 m"
@@ -969,54 +1484,31 @@ export default function VenueSetupPage() {
           />
         </Field>
 
-        <div
-          className="field"
-        >
+        <div className="field">
           <label>
             Assign to Sports <span className="subtle tiny">(Choose all sports playable on this pitch)</span>
           </label>
 
-          <div
-            className="row-wrap"
-            style={{
-              gap: 8,
-              marginTop: 6,
-            }}
-          >
+          <div className="row-wrap" style={{ gap: 8, marginTop: 6 }}>
             {ASSIGNABLE_SPORTS.map((sport) => (
               <Chip
                 key={sport}
                 active={pitchDraft.sports.includes(sport)}
                 onToggle={() => toggleDraftSport(sport)}
-                style={{
-                  cursor: 'pointer',
-                }}
+                style={{ cursor: 'pointer' }}
               >
-                {SPORT_BADGES[sport].glyph}
+                {SPORT_BADGES[sport]?.glyph || sport}
               </Chip>
             ))}
           </div>
         </div>
 
-        <div
-          className="stack-sm"
-          style={{
-            marginTop: 16,
-          }}
-        >
-          <Button
-            variant="primary"
-            block
-            onClick={savePitch}
-          >
+        <div className="stack-sm" style={{ marginTop: 16 }}>
+          <Button variant="primary" block onClick={savePitch}>
             Save pitch assignment ✓
           </Button>
 
-          <Button
-            variant="tertiary"
-            block
-            onClick={pitchModal.close}
-          >
+          <Button variant="tertiary" block onClick={pitchModal.close}>
             Cancel
           </Button>
         </div>
@@ -1026,88 +1518,60 @@ export default function VenueSetupPage() {
       <Overlay
         isOpen={slotModal.isOpen}
         onClose={slotModal.close}
-        title="Slot times & base price by sport"
+        title="Edit Sport Slot Times, Buffer & Base Price"
         maxWidth={520}
       >
-        <p
-          className="subtle small"
-          style={{
-            margin: '4px 0 12px',
-          }}
-        >
-          Set the slot length and one base price per sport. You do not set peak and off-peak rates —
-          the pricing model moves each slot around your base price on its own.
+        <p className="subtle small" style={{ margin: '4px 0 12px' }}>
+          Select a sport to edit its play duration, handover buffer time, and base price per slot.
         </p>
 
-        <Field
-          label="Select Sport"
-          htmlFor="spSportSelect"
-        >
+        <Field label="Select Sport" htmlFor="spSportSelect">
           <Select
             id="spSportSelect"
             value={slotDraft.sport}
             onChange={(event) => selectSlotSport(event.target.value)}
           >
             {sportPricing.map((sport) => (
-              <option
-                key={sport.id}
-                value={sport.id}
-              >
+              <option key={sport.id} value={sport.id}>
                 {sport.title}
               </option>
             ))}
           </Select>
         </Field>
 
-        <div
-          className="grid2"
-          style={{
-            gap: 10,
-          }}
-        >
-          <Field
-            label="Slot Duration"
-            htmlFor="spDuration"
-          >
+        <div className="grid2" style={{ gap: 10 }}>
+          <Field label="Play Duration (mins)" htmlFor="spDuration">
             <Select
               id="spDuration"
               value={slotDraft.duration}
               onChange={(event) => setSlotDraft((current) => ({ ...current, duration: event.target.value }))}
             >
               <option value="30">30 minutes</option>
-
               <option value="40">40 minutes</option>
-
+              <option value="45">45 minutes</option>
               <option value="60">60 minutes (1 hr)</option>
-
+              <option value="75">75 minutes</option>
               <option value="90">90 minutes (1.5 hrs)</option>
-
               <option value="120">120 minutes (2 hrs)</option>
             </Select>
           </Field>
 
-          <Field
-            label="Handover Buffer"
-            htmlFor="spBuffer"
-          >
+          <Field label="Handover Buffer (mins)" htmlFor="spBuffer">
             <Select
               id="spBuffer"
               value={slotDraft.buffer}
               onChange={(event) => setSlotDraft((current) => ({ ...current, buffer: event.target.value }))}
             >
+              <option value="0">0 minutes</option>
               <option value="5">5 minutes</option>
-
               <option value="10">10 minutes</option>
-
               <option value="15">15 minutes</option>
+              <option value="20">20 minutes</option>
             </Select>
           </Field>
         </div>
 
-        <Field
-          label="Base price per slot (৳)"
-          htmlFor="spBasePrice"
-        >
+        <Field label="Base price per slot (৳)" htmlFor="spBasePrice">
           <Input
             className="num"
             id="spBasePrice"
@@ -1117,37 +1581,92 @@ export default function VenueSetupPage() {
           />
         </Field>
 
-        <p
-          className="tiny subtle"
-          style={{
-            margin: '-4px 0 0',
-          }}
-        >
-          A quiet weekday morning may sell below this; a Friday evening in good weather may sell
-          above it. You always keep your revenue share of whatever the slot sells for.
-        </p>
+        <Alert tone="info" style={{ marginTop: 10 }}>
+          💡 Total slot block = <b>{Number(slotDraft.duration) + Number(slotDraft.buffer)} mins</b> ({slotDraft.duration}m play + {slotDraft.buffer}m buffer).
+        </Alert>
 
-        <div
-          className="stack-sm"
-          style={{
-            marginTop: 16,
-          }}
-        >
-          <Button
-            variant="primary"
-            block
-            onClick={saveSlotSettings}
-          >
-            Save base price ✓
+        <div className="stack-sm" style={{ marginTop: 16 }}>
+          <Button variant="primary" block onClick={saveSlotSettings}>
+            Save duration, buffer & price ✓
           </Button>
 
-          <Button
-            variant="tertiary"
-            block
-            onClick={slotModal.close}
-          >
+          <Button variant="tertiary" block onClick={slotModal.close}>
             Cancel
           </Button>
+        </div>
+      </Overlay>
+
+      {/* Modal: Slot Generator & Time Slot Modifier */}
+      <Overlay
+        isOpen={generateSlotsModal.isOpen}
+        onClose={generateSlotsModal.close}
+        title="Time Slot Modifier & Batch Generator"
+        maxWidth={560}
+      >
+        <p className="subtle small" style={{ margin: '4px 0 12px' }}>
+          Select a pitch and enter starting times. End times and 2nd slot validity are calculated automatically based on sport duration + buffer.
+        </p>
+
+        <Field label="Select Pitch" htmlFor="genPitch">
+          <Select id="genPitch" value={generateDraft.pitchId} onChange={e => setGenerateDraft(c => ({...c, pitchId: e.target.value}))}>
+            <option value="">Select Pitch...</option>
+            {pitches.map(p => (
+              <option key={p.id} value={p.id}>{p.name}{p.sports?.length ? ` (${p.sports.join(', ')})` : ''}</option>
+            ))}
+          </Select>
+        </Field>
+
+        <div className="grid2" style={{ gap: 10 }}>
+          <Field label="Start Date (DD/MM/YYYY)" htmlFor="genStart">
+            <CustomDatePicker
+              id="genStart"
+              value={generateDraft.startDate}
+              onChange={e => setGenerateDraft(c => ({...c, startDate: e.target.value}))}
+            />
+          </Field>
+          <Field label="End Date (DD/MM/YYYY)" htmlFor="genEnd">
+            <CustomDatePicker
+              id="genEnd"
+              value={generateDraft.endDate}
+              onChange={e => setGenerateDraft(c => ({...c, endDate: e.target.value}))}
+            />
+          </Field>
+        </div>
+
+        <div className="grid2" style={{ gap: 10 }}>
+          <Field label="1st Slot Starting Time (24h)" htmlFor="genTimeStart">
+            <CustomTimePicker
+              id="genTimeStart"
+              value={generateDraft.startTime}
+              onChange={e => setGenerateDraft(c => ({...c, startTime: e.target.value}))}
+            />
+          </Field>
+          <Field label="Daily Operating End Time (24h)" htmlFor="genTimeEnd">
+            <CustomTimePicker
+              id="genTimeEnd"
+              value={generateDraft.endTime}
+              onChange={e => setGenerateDraft(c => ({...c, endTime: e.target.value}))}
+            />
+          </Field>
+        </div>
+
+        <div className="grid2" style={{ gap: 10 }}>
+          <Field label="Duration (mins)" htmlFor="genDur">
+            <Input id="genDur" type="number" min="15" value={generateDraft.slotDurationMinutes} onChange={e => setGenerateDraft(c => ({...c, slotDurationMinutes: e.target.value}))} />
+          </Field>
+          <Field label="Base Price (৳)" htmlFor="genPrice">
+            <Input id="genPrice" type="number" min="0" value={generateDraft.basePrice} onChange={e => setGenerateDraft(c => ({...c, basePrice: e.target.value}))} />
+          </Field>
+        </div>
+
+        <div className="stack-sm" style={{ marginTop: 16 }}>
+          <Button variant="primary" block onClick={handleGenerateSlots}>Generate Slots</Button>
+        </div>
+      </Overlay>
+
+      <Overlay isOpen={!!previewFile} onClose={() => setPreviewFile(null)} title={previewFile?.name || 'Photo Preview'} maxWidth={800}>
+        <div style={{ height: '70vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <img src={previewFile?.url || previewFile} alt="Preview" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }} />
         </div>
       </Overlay>
     </>

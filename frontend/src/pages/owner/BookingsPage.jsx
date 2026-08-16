@@ -4,119 +4,85 @@ import { Button } from '@/components/buttons/Button';
 import { Chip } from '@/components/ui/Chip';
 import { Input } from '@/components/forms/Field';
 import { PageTitle } from '@/components/common/PageTitle';
+import { TableScroll } from '@/components/tables/TableScroll';
 import { useFilterChips } from '@/hooks/useFilterChips';
 import { useToast } from '@/hooks/useToast';
+import { useApi } from '@/hooks/useApi';
+import {
+  approveOwnerBooking,
+  cancelOwnerBooking,
+  getOwnerBookings,
+  refundOwnerBooking,
+} from '@/api/ownerBookings';
+import { listMyVenues } from '@/api/ownerVenues';
+import { getMyTurfRequests } from '@/api/turfRequests';
+import { paths } from '@/routes/paths';
+import { toUserMessage } from '@/utils/errorMessage';
 
-const FILTERS = [
-  'Today',
-  'This week',
-  'Pitch 2',
-  'Online',
-  'Phone',
-  'Walk-in',
-  'Payment pending',
-];
+const PAGE_SIZE = 20;
 
-const BOOKINGS = [
-  {
-    id: 'TC-48277',
-    time: '4:00 PM',
-    customer: 'Tanvir Ahmed',
-    sub: '+880 1615 ••• 234',
-    subNum: true,
-    pitch: 'Pitch 1',
-    source: { tone: 'green', text: 'Online' },
-    amount: '৳2,500',
-    payment: { tone: 'green', text: 'Paid' },
-    actions: [
-      { label: 'Check in', variant: 'secondary', toast: 'Checked in ✓' },
-      { label: '⋯', variant: 'tertiary', toast: 'Detail drawer — see Calendar page' },
-    ],
-  },
-  {
-    id: 'TC-48291',
-    time: '7:30 PM',
-    customer: 'Rafiul Karim',
-    sub: '+880 1712 ••• 890',
-    subNum: true,
-    pitch: 'Pitch 2',
-    source: { tone: 'green', text: 'Online' },
-    amount: '৳2,550',
-    payment: { tone: 'green', text: 'Paid · split 10/10' },
-    actions: [
-      { label: 'Check in', variant: 'secondary', toast: 'Checked in ✓' },
-      { label: '⋯', variant: 'tertiary', toast: 'Detail drawer — see Calendar page' },
-    ],
-  },
-  {
-    id: 'TC-48285',
-    time: '7:30 PM',
-    customer: 'Karim Traders XI',
-    sub: '+880 1911 ••• 456',
-    subNum: true,
-    pitch: 'Pitch 1',
-    source: { tone: 'amber', text: 'Phone' },
-    amount: '৳2,550',
-    payment: { tone: 'amber', text: '৳1,785 due at venue' },
-    actions: [
-      { label: 'Collect', variant: 'primary', toast: '৳1,785 cash collected — logged to evening shift ✓' },
-      { label: '⋯', variant: 'tertiary', toast: 'Detail drawer' },
-    ],
-  },
-  {
-    id: 'OG-7734',
-    time: '9:00 PM',
-    customer: 'Open game · Rifat H.',
-    sub: '10 players · all paid',
-    pitch: 'Pitch 2',
-    source: { tone: 'blue', text: 'Open game' },
-    amount: '৳2,800',
-    payment: { tone: 'green', text: 'Paid' },
-    actions: [{ label: '⋯', variant: 'tertiary', toast: 'Detail drawer' }],
-  },
-  {
-    id: 'TC-48293',
-    time: '9:00 PM',
-    customer: 'Hasan Uddin',
-    sub: '+880 1912 ••• 677',
-    subNum: true,
-    pitch: 'Pitch 3',
-    source: { tone: 'amber', text: 'Phone' },
-    amount: '৳1,700',
-    payment: { tone: 'amber', text: 'Deposit ৳510' },
-    actions: [
-      { label: 'Remind', variant: 'secondary', toast: 'Reminder SMS sent 📩' },
-      { label: '⋯', variant: 'tertiary', toast: 'Detail drawer' },
-    ],
-  },
-  {
-    id: 'TC-48102',
-    time: '11:00 AM',
-    customer: 'Sadia Rahman',
-    sub: '+880 1710 ••• 118',
-    subNum: true,
-    pitch: 'Pitch 2',
-    source: { tone: 'green', text: 'Online' },
-    amount: '৳2,200',
-    payment: { tone: 'red', text: 'Cancelled · refunded' },
-    dim: true,
-    actions: [
-      { label: '⋯', variant: 'tertiary', toast: 'Refund detail — ৳2,200 to bKash, TXN R-2210' },
-    ],
-  },
-];
+const ACTION_HANDLERS = {
+  approve: { run: approveOwnerBooking, done: 'Booking approved ✓' },
+  cancel: { run: cancelOwnerBooking, done: 'Booking cancelled — slot released' },
+  refund: { run: refundOwnerBooking, done: 'Refund recorded per your cancellation policy' },
+};
 
 export default function BookingsPage() {
   const { showToast } = useToast();
   const chips = useFilterChips(['Today']);
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(0);
+  // One in-flight action per row: a second click must not fire a second write.
+  const [busyId, setBusyId] = useState(null);
+
+  const { data: res, loading, reload } = useApi(getOwnerBookings, []);
+  const bookings = Array.isArray(res) ? res : (Array.isArray(res?.data) ? res.data : []);
+
+  const { data: venuesRes } = useApi(listMyVenues, []);
+  const venues = Array.isArray(venuesRes) ? venuesRes : (Array.isArray(venuesRes?.data) ? venuesRes.data : []);
+  const activeVenue = Array.isArray(venues) && venues.length > 0 ? venues[0] : null;
+
+  const { data: requestsRes } = useApi(getMyTurfRequests, []);
+  const latestRequest = Array.isArray(requestsRes) ? requestsRes[0] : null;
+
+  const pitchCount = activeVenue?.pitchCount || activeVenue?.pitches?.length || latestRequest?.pitchCount || 1;
+  const pitchFilters = Array.from({ length: pitchCount }, (_, i) => `Pitch ${i + 1}`);
+
+  const filters = [
+    'Today',
+    'This week',
+    ...pitchFilters,
+    'Online',
+    'Phone',
+    'Walk-in',
+    'Payment pending',
+  ];
 
   const term = query.trim().toLowerCase();
-  const visible = term
-    ? BOOKINGS.filter((row) =>
-        `${row.customer} ${row.sub} ${row.id}`.toLowerCase().includes(term),
+  const matching = term
+    ? bookings.filter((row) =>
+        `${row.customer} ${row.sub} ${row.bookingCode} ${row.pitch}`.toLowerCase().includes(term),
       )
-    : BOOKINGS;
+    : bookings;
+
+  const totalPages = Math.max(1, Math.ceil(matching.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const visible = matching.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  const runAction = async (row, action) => {
+    const handler = ACTION_HANDLERS[action];
+    if (!handler || busyId != null) return;
+    setBusyId(row.id);
+    try {
+      await handler.run(row.id);
+      showToast(handler.done);
+      reload();
+    } catch (error) {
+      showToast(toUserMessage(error, 'Could not complete that action.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <>
@@ -125,9 +91,9 @@ export default function BookingsPage() {
       <div className="main-header">
         <div>
           <h1>Bookings</h1>
-          <span className="subtle small">All sources · searchable &amp; filterable</span>
+          <span className="subtle small">All sources · searchable &amp; filterable ({pitchCount} Pitch{pitchCount > 1 ? 'es' : ''})</span>
         </div>
-        <Button variant="primary" onClick={() => showToast('Manual booking drawer — see Calendar page')}>
+        <Button variant="primary" to={paths.owner.calendar}>
           + Manual booking
         </Button>
       </div>
@@ -140,14 +106,14 @@ export default function BookingsPage() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-        {FILTERS.map((filter) => (
+        {filters.map((filter) => (
           <Chip key={filter} active={chips.isActive(filter)} onToggle={() => chips.toggle(filter)}>
             {filter}
           </Chip>
         ))}
       </div>
 
-      <div className="card table-wrap" style={{ padding: 0 }}>
+      <TableScroll label="Bookings" className="card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
@@ -163,9 +129,9 @@ export default function BookingsPage() {
           </thead>
           <tbody>
             {visible.map((row) => (
-              <tr key={row.id} style={row.dim ? { opacity: 0.65 } : undefined}>
+              <tr key={row.id} style={row.dim ? { background: 'var(--surface-2)' } : undefined}>
                 <td className="num">{row.time}</td>
-                <td className="num">{row.id}</td>
+                <td className="num">{row.bookingCode}</td>
                 <td>
                   {row.customer}
                   <br />
@@ -177,46 +143,66 @@ export default function BookingsPage() {
                     {row.source.text}
                   </Badge>
                 </td>
-                <td className="num">{row.amount}</td>
+                <td className="num">{row.amountFormatted}</td>
                 <td>
                   <Badge tone={row.payment.tone}>{row.payment.text}</Badge>
                 </td>
                 <td>
-                  {row.actions.length > 1 ? (
+                  {row.actions?.length ? (
                     <div className="row" style={{ gap: 6 }}>
                       {row.actions.map((action) => (
                         <Button
                           key={action.label}
                           size="sm"
                           variant={action.variant}
-                          onClick={() => showToast(action.toast)}
+                          disabled={busyId != null}
+                          onClick={() => runAction(row, action.action)}
                         >
-                          {action.label}
+                          {busyId === row.id ? 'Working…' : action.label}
                         </Button>
                       ))}
                     </div>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant={row.actions[0].variant}
-                      onClick={() => showToast(row.actions[0].toast)}
-                    >
-                      {row.actions[0].label}
-                    </Button>
-                  )}
+                  ) : null}
                 </td>
               </tr>
             ))}
+            {!loading && visible.length === 0 && (
+              <tr>
+                <td colSpan={8} className="center subtle small" style={{ padding: '32px 0' }}>
+                  No bookings found
+                </td>
+              </tr>
+            )}
+            {loading && (
+              <tr>
+                <td colSpan={8} className="center subtle small" style={{ padding: '32px 0' }}>
+                  Loading bookings...
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       <div className="between small" style={{ marginTop: 10 }}>
-        <span className="subtle">Showing {visible.length} of 14 bookings today</span>
+        <span className="subtle">
+          Showing {visible.length} of {matching.length} booking{matching.length === 1 ? '' : 's'}
+          {totalPages > 1 ? ` · page ${safePage + 1} of ${totalPages}` : ''}
+        </span>
         <div className="row">
-          <Button size="sm" variant="tertiary" onClick={() => showToast('Previous page')}>
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={safePage === 0}
+            onClick={() => setPage((current) => Math.max(0, current - 1))}
+          >
             ‹ Prev
           </Button>
-          <Button size="sm" variant="tertiary" onClick={() => showToast('Next page')}>
+          <Button
+            size="sm"
+            variant="tertiary"
+            disabled={safePage >= totalPages - 1}
+            onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+          >
             Next ›
           </Button>
         </div>

@@ -3,13 +3,15 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { Button } from '@/components/buttons/Button';
 import { Photo } from '@/components/ui/Photo';
-import { holdSlot } from '@/api/bookings';
+import { getVenueSlots, holdSlot, listBookings } from '@/api/bookings';
 import { getToken } from '@/api/client';
-import { checkout } from '@/api/payments';
+import { getVenue } from '@/api/venues';
+import { checkout, validatePromoCode } from '@/api/payments';
 import { getMyPoints } from '@/api/rewards';
 import { useApi } from '@/hooks/useApi';
 import { useCountdown } from '@/hooks/useCountdown';
 import { useToast } from '@/hooks/useToast';
+import { toUserMessage } from '@/utils/errorMessage';
 import { paths } from '@/routes/paths';
 import './CheckoutPage.css';
 
@@ -40,9 +42,17 @@ const METHODS = [
 ];
 
 const METHOD_HINTS = {
-  BKASH: "You'll approve the payment in your bKash app. TurfChai never sees your PIN.",
-  NAGAD: "You'll approve the payment in your Nagad app. TurfChai never sees your PIN.",
-  CARD: 'Card payments are processed securely — TurfChai never stores your card number.',
+  BKASH: 'Pay the venue by bKash. TurfChai never asks for your PIN.',
+  NAGAD: 'Pay the venue by Nagad. TurfChai never asks for your PIN.',
+  CARD: 'Pay the venue by card on arrival. TurfChai never asks for your card number.',
+};
+
+// Provider brand tones for the confirmation panel, kept separate from the
+// method-selector colours above.
+const BRAND_COLORS = {
+  BKASH: '#E2136E',
+  NAGAD: '#F26522',
+  CARD: '#2660D8',
 };
 
 const POLICY = [
@@ -137,13 +147,23 @@ export default function CheckoutPage() {
   const [slotInfo, setSlotInfo] = useState(null);
   const [lockSeconds, setLockSeconds] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [payError, setPayError] = useState(null);
+  // `applied` is the server's quote for the typed code; `error` is its reason
+  // for refusing one. Nothing here is trusted at payment time.
+  const [promo, setPromo] = useState({ input: '', applied: null, error: '', checking: false });
 
-  const wallet = useApi(() => getMyPoints(), []);
+  // Confirmation overlay state. No payment credentials are collected.
+  const [gatewayStep, setGatewayStep] = useState(null); // null | 'confirm' | 'processing'
+  const [gatewayError, setGatewayError] = useState(null);
+
+  const wallet = useApi(() => (signedIn ? getMyPoints() : Promise.resolve(null)), [signedIn]);
   const walletBalance = wallet.data?.walletBalance ?? 0;
   const slotPrice = slotInfo?.price ?? null;
-  const walletApplied = applyWallet && slotPrice != null ? Math.min(walletBalance, slotPrice) : 0;
-  const dueNow = slotPrice != null ? Math.max(0, slotPrice - walletApplied) : null;
+  // The server prices the discount again at checkout; this is only the quote the
+  // player is shown, so a tampered value cannot buy a cheaper booking.
+  const discount = promo.applied ? Math.min(promo.applied.discountAmount, slotPrice ?? 0) : 0;
+  const payable = slotPrice != null ? Math.max(0, slotPrice - discount) : null;
+  const walletApplied = applyWallet && payable != null ? Math.min(walletBalance, payable) : 0;
+  const dueNow = payable != null ? Math.max(0, payable - walletApplied) : null;
 
   const acquireHold = useCallback(async () => {
     try {
@@ -162,6 +182,23 @@ export default function CheckoutPage() {
       return true;
     } catch (error) {
       const taken = error.status === 409;
+      if (taken) {
+        // The commonest way to land here is the back button after paying: the
+        // slot is unavailable because this very user booked it. Saying
+        // "someone else took it" made a successful booking look like a failure.
+        try {
+          const mine = await listBookings();
+          const own = (Array.isArray(mine) ? mine : []).find(
+            (b) => String(b.slotId) === String(slotId) && b.status !== 'CANCELLED',
+          );
+          if (own) {
+            setHold({ state: 'mine', heldUntil: null, message: '', bookingId: own.id });
+            return false;
+          }
+        } catch {
+          // Fall through to the generic message below.
+        }
+      }
       setHold({
         state: 'error',
         heldUntil: null,
@@ -191,6 +228,39 @@ export default function CheckoutPage() {
     }
   }, [signedIn, slotId, acquireHold]);
 
+  // Slot details used to arrive only with the hold, which needs a session and
+  // fails once the slot is yours, so the summary blanked to "—". The venue and
+  // its slots are public, so read them directly whatever the hold does.
+  const venueSlug = searchParams.get('venue');
+  const slotDate = searchParams.get('date');
+  useEffect(() => {
+    if (!slotId || !venueSlug || !slotDate) return;
+    let cancelled = false;
+    getVenue(venueSlug)
+      .then((venue) => getVenueSlots(venue.id, slotDate))
+      .then((slots) => {
+        if (cancelled) return;
+        const match = (Array.isArray(slots) ? slots : []).find((s) => String(s.id) === String(slotId));
+        if (match) {
+          setSlotInfo((current) => current ?? {
+            price: match.price,
+            venueId: match.venueId,
+            pitchId: match.pitchId,
+            pitchName: match.pitchName,
+            slotDate: match.slotDate,
+            startTime: match.startTime,
+            endTime: match.endTime,
+          });
+        }
+      })
+      .catch(() => {
+        // Preview only; the call to action is unaffected.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slotId, venueSlug, slotDate]);
+
   const { label: lockLabel } = useCountdown(lockSeconds, {
     onExpire:
       hold.state === 'held'
@@ -198,43 +268,171 @@ export default function CheckoutPage() {
         : undefined,
   });
 
-  const attemptPayment = async (simulateFailure) => {
+  const onPay = () => {
     if (!signedIn) {
       navigate(signInHref);
       return;
     }
     if (!slotId || busy || hold.state !== 'held') return;
+    setGatewayError(null);
+    setGatewayStep('confirm');
+  };
+
+  const closeGateway = () => {
+    setGatewayStep(null);
+  };
+
+  const applyPromo = async () => {
+    const code = promo.input.trim();
+    if (!code || slotPrice == null) return;
+    setPromo((prev) => ({ ...prev, checking: true, error: '' }));
+    try {
+      const quote = await validatePromoCode({
+        code,
+        orderTotal: slotPrice,
+        venueId: slotInfo?.venueId,
+      });
+      if (quote?.valid) {
+        setPromo({ input: '', applied: quote, error: '', checking: false });
+        showToast(`${quote.code} applied — ${bdt(quote.discountAmount)} off`);
+      } else {
+        setPromo((prev) => ({
+          ...prev,
+          checking: false,
+          error: quote?.message || 'That promo code cannot be used for this booking',
+        }));
+      }
+    } catch (error) {
+      // A refused code answers 422 with the reason in the body.
+      setPromo((prev) => ({
+        ...prev,
+        checking: false,
+        error: error.detail || error.message || 'That promo code cannot be used for this booking',
+      }));
+    }
+  };
+
+  const removePromo = () => setPromo({ input: '', applied: null, error: '', checking: false });
+
+  const confirmPayment = async () => {    setGatewayStep('processing');
     setBusy(true);
-    setPayError(null);
     try {
       const result = await checkout({
         slotId,
         method,
-        applyWalletAmount: !simulateFailure && walletApplied > 0 ? walletApplied : undefined,
-        simulateFailure,
+        applyWalletAmount: walletApplied > 0 ? walletApplied : undefined,
+        promoCode: promo.applied?.code,
       });
       if (result.status === 'SUCCESS') {
-        navigate(`${paths.player.bookingSuccess}?bookingId=${result.bookingId}`, {
-          state: { pointsEarned: result.pointsEarned, method },
+        navigate(`${paths.player.bookingSuccess}?bookingId=${encodeURIComponent(result.bookingId)}`, {
+          state: { pointsEarned: result.pointsEarned },
         });
       } else {
-        setPayError(result.payment?.failureReason || result.message || 'Payment declined — please try again.');
+        setGatewayStep('confirm');
+        setGatewayError(result.message || 'Payment could not be completed — try again');
       }
     } catch (error) {
+      setGatewayStep(null);
       if (error.status === 409) {
         showToast('Slot was taken while you were paying — locking it again');
         const reheld = await rehold();
         if (!reheld) showToast('Slot is no longer available — please pick another time slot');
+      } else if (error.status === 422) {
+        // The code was still valid when quoted but not when the payment ran —
+        // it expired, was paused, or somebody took the last use. Drop it so the
+        // player can pay the real price rather than being stuck.
+        const reason = error.detail || 'That promo code is no longer valid';
+        setPromo({ input: '', applied: null, error: reason, checking: false });
+        showToast(`${reason} — the discount has been removed`);
       } else {
-        showToast(error.message || 'Payment could not be completed — try again');
+        showToast(toUserMessage(error, 'Payment could not be completed — try again'));
       }
     } finally {
       setBusy(false);
     }
   };
 
-  const onPay = () => attemptPayment(false);
-  const onSimulateFailure = () => attemptPayment(true);
+  /**
+   * Confirmation and progress only. TurfChai has no payment provider, so it
+   * must not ask for a card number, a CVV or a wallet PIN — collecting
+   * credentials it cannot use, and does not send anywhere, would be worse than
+   * useless. The method the player picks is real: it is stored on the payment
+   * record and the venue settles against it.
+   */
+  const renderGateway = () => {
+    const brand = BRAND_COLORS[method] ?? BRAND_COLORS.CARD;
+    const meta = METHODS.find((item) => item.id === method);
+
+    return (
+      <section className="gw" aria-live="polite">
+        <div className="gw-head" style={{ background: brand }}>
+          <span className="gw-logo" aria-hidden="true">
+            {meta.logo}
+          </span>
+          <div className="gw-head-mid">
+            <b>{methodLabel}</b>
+            <span>Confirm your booking</span>
+          </div>
+          <div className="gw-amount">
+            <span>AMOUNT</span>
+            <b className="num">{bdt(dueNow)}</b>
+          </div>
+        </div>
+
+        {gatewayStep === 'confirm' ? (
+          <div className="gw-body">
+            <button type="button" className="gw-cancel" onClick={closeGateway}>
+              ← Back
+            </button>
+            <h2 className="gw-title">Confirm this booking</h2>
+
+            <div className="alert info" style={{ marginTop: 4 }}>
+              <span className="ico" aria-hidden="true">ℹ️</span>
+              <div className="small">
+                TurfChai does not take payment online yet. Confirming reserves the slot in your
+                name and records <b>{bdt(dueNow)}</b> as due by {methodLabel} — you pay the venue
+                directly. Never enter a card number or wallet PIN here.
+              </div>
+            </div>
+
+            <div className="gw-receipt" style={{ marginTop: 12 }}>
+              <div className="co-detail-row">
+                <span className="co-detail-label">Method</span>
+                <span className="co-detail-value">{methodLabel}</span>
+              </div>
+              <div className="co-detail-row">
+                <span className="co-detail-label">Amount due</span>
+                <span className="co-detail-value num">{bdt(dueNow)}</span>
+              </div>
+            </div>
+
+            {gatewayError ? (
+              <div className="alert warn" role="status" style={{ marginTop: 8 }}>
+                <span className="ico">⚠️</span>
+                <div>{gatewayError}</div>
+              </div>
+            ) : null}
+
+            <div className="gw-foot">
+              <Button variant="primary" size="lg" block onClick={confirmPayment} disabled={busy}>
+                {busy ? 'Confirming…' : `Confirm booking · ${bdt(dueNow)}`}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {gatewayStep === 'processing' ? (
+          <div className="gw-body gw-center">
+            <div className="gw-spinner" role="status" aria-label="Confirming booking" />
+            <h2 className="gw-title">Confirming your booking…</h2>
+            <p className="subtle" style={{ margin: 0 }}>
+              Please don&apos;t close this window.
+            </p>
+          </div>
+        ) : null}
+      </section>
+    );
+  };
 
   const lockText = !signedIn
     ? 'Sign in to hold this slot'
@@ -242,9 +440,11 @@ export default function CheckoutPage() {
       ? 'Locking your slot…'
       : hold.state === 'held'
         ? lockLabel
-        : hold.state === 'expired'
-          ? 'Hold expired'
-          : 'Slot unavailable';
+        : hold.state === 'mine'
+          ? 'Already booked by you'
+          : hold.state === 'expired'
+            ? 'Hold expired'
+            : 'Slot unavailable';
 
   if (!slotId) {
     return (
@@ -309,6 +509,23 @@ export default function CheckoutPage() {
           </div>
         </div>
 
+        {hold.state === 'mine' ? (
+          <div className="alert ok" role="status" style={{ marginBottom: 20 }}>
+            <span className="ico">✓</span>
+            <div>
+              <b>You have already booked this slot</b>
+              It is reserved in your name — there is nothing left to pay here.
+              <Link
+                className="btn btn-secondary btn-sm"
+                style={{ marginLeft: 10 }}
+                to={paths.player.bookingDetail(hold.bookingId)}
+              >
+                View booking
+              </Link>
+            </div>
+          </div>
+        ) : null}
+
         {hold.state === 'error' || hold.state === 'expired' ? (
           <div className="alert warn" role="status" style={{ marginBottom: 20 }}>
             <span className="ico">⚠️</span>
@@ -328,22 +545,16 @@ export default function CheckoutPage() {
           </div>
         ) : null}
 
-        {payError ? (
-          <div className="alert warn" role="status" style={{ marginBottom: 20 }}>
-            <span className="ico">⚠️</span>
-            <div>
-              <b>Payment declined</b>
-              {payError}
-            </div>
-          </div>
-        ) : null}
+        {gatewayStep ? (
+          renderGateway()
+        ) : (
+          <>
+            <h1 style={{ fontSize: 26, margin: '10px 0 4px' }}>Confirm and pay</h1>
+            <p style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 28 }}>
+              Your slot is held for 5 minutes — no one else can take it while you pay.
+            </p>
 
-        <h1 style={{ fontSize: 26, margin: '10px 0 4px' }}>Confirm and pay</h1>
-        <p style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 28 }}>
-          Your slot is held for 5 minutes — no one else can take it while you pay.
-        </p>
-
-        <div className="co-grid">
+            <div className="co-grid">
           <div>
             {/* Step 1: Payment method */}
             <div className="co-step">
@@ -465,11 +676,64 @@ export default function CheckoutPage() {
               </label>
             ) : null}
 
+            {signedIn && slotPrice != null ? (
+              <div style={{ margin: '4px 0 12px' }}>
+                {promo.applied ? (
+                  <div className="between" style={{ gap: 8 }}>
+                    <span className="small">
+                      <b>{promo.applied.code}</b> applied
+                      {promo.applied.label ? ` · ${promo.applied.label}` : ''}
+                    </span>
+                    <Button size="sm" variant="tertiary" onClick={removePromo}>
+                      Remove
+                    </Button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      className="input"
+                      aria-label="Promo code"
+                      placeholder="Promo code"
+                      value={promo.input}
+                      onChange={(event) =>
+                        setPromo((prev) => ({ ...prev, input: event.target.value, error: '' }))
+                      }
+                      onKeyDown={(event) => event.key === 'Enter' && applyPromo()}
+                      style={{ flex: 1, textTransform: 'uppercase' }}
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={applyPromo}
+                      loading={promo.checking}
+                      disabled={promo.checking || !promo.input.trim()}
+                      style={{ flexShrink: 0 }}
+                    >
+                      Apply
+                    </Button>
+                  </div>
+                )}
+                {promo.error ? (
+                  <p className="tiny" role="alert" style={{ color: 'var(--danger)', margin: '6px 0 0' }}>
+                    {promo.error}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <div style={{ marginBottom: 8 }}>
               <div className="pricerow">
                 <span className="pr-label">Slot</span>
                 <span className="pr-val num">{bdt(slotPrice)}</span>
               </div>
+              {discount > 0 ? (
+                <div className="pricerow">
+                  <span className="pr-label neg" style={{ color: 'var(--brand-600)' }}>
+                    Promo {promo.applied?.code}
+                  </span>
+                  <span className="pr-val neg num">−{bdt(discount)}</span>
+                </div>
+              ) : null}
               {walletApplied > 0 ? (
                 <div className="pricerow">
                   <span className="pr-label neg" style={{ color: 'var(--brand-600)' }}>
@@ -502,17 +766,10 @@ export default function CheckoutPage() {
                 Browsing is open to everyone — we only need an account to hold the slot in your name.
               </p>
             ) : null}
-            <Button
-              variant="tertiary"
-              block
-              onClick={onSimulateFailure}
-              disabled={!signedIn || hold.state !== 'held' || busy}
-              style={{ marginTop: 6, fontSize: 13 }}
-            >
-              Simulate failed payment
-            </Button>
           </aside>
-        </div>
+          </div>
+          </>
+        )}
       </main>
     </>
   );

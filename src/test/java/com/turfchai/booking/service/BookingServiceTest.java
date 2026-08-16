@@ -4,6 +4,7 @@ import com.turfchai.booking.entity.Booking;
 import com.turfchai.booking.entity.BookingStatus;
 import com.turfchai.booking.entity.Slot;
 import com.turfchai.booking.entity.SlotStatus;
+import com.turfchai.booking.event.SlotStatusChangedEvent;
 import com.turfchai.booking.exception.SlotUnavailableException;
 import com.turfchai.booking.repository.BookingRepository;
 import com.turfchai.booking.repository.SlotRepository;
@@ -12,10 +13,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 
@@ -32,6 +37,16 @@ class BookingServiceTest {
     private BookingRepository bookingRepository;
     @Mock
     private UserRepository userRepository;
+    @Mock
+    private com.turfchai.venue.repository.VenueRepository venueRepository;
+    @Mock
+    private ApplicationEventPublisher events;
+    @Mock
+    private com.turfchai.service.NotificationService notificationService;
+
+    /** Real policy, not a mock: these tests must exercise the actual time rules. */
+    @Spy
+    private SlotTimePolicy slotTimePolicy = new SlotTimePolicy();
 
     @InjectMocks
     private BookingService bookingService;
@@ -75,6 +90,36 @@ class BookingServiceTest {
         assertThrows(SlotUnavailableException.class, () -> bookingService.holdSlot(USER_ID, SLOT_ID));
 
         verify(slotRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("holdSlot announces the hold so live venue pages can update")
+    void holdSlot_publishesHeldEvent() {
+        slot.setVenueId(7L);
+        slot.setSlotDate(LocalDate.of(2026, 8, 20));
+        when(slotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
+
+        OffsetDateTime heldUntil = bookingService.holdSlot(USER_ID, SLOT_ID);
+
+        ArgumentCaptor<SlotStatusChangedEvent> captor = ArgumentCaptor.forClass(SlotStatusChangedEvent.class);
+        verify(events).publishEvent(captor.capture());
+        SlotStatusChangedEvent published = captor.getValue();
+        assertEquals(SLOT_ID, published.slotId());
+        assertEquals(7L, published.venueId());
+        assertEquals(LocalDate.of(2026, 8, 20), published.slotDate());
+        assertEquals(SlotStatus.HELD, published.status());
+        assertEquals(heldUntil, published.heldUntil());
+    }
+
+    @Test
+    @DisplayName("a rejected hold announces nothing — a failed attempt must not blank the slot for everyone")
+    void holdSlot_publishesNothing_whenRejected() {
+        slot.setStatus(SlotStatus.BOOKED);
+        when(slotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
+
+        assertThrows(SlotUnavailableException.class, () -> bookingService.holdSlot(USER_ID, SLOT_ID));
+
+        verify(events, never()).publishEvent(any(SlotStatusChangedEvent.class));
     }
 
     @Test
@@ -187,6 +232,8 @@ class BookingServiceTest {
                 .status(BookingStatus.CONFIRMED)
                 .build();
         when(bookingRepository.findById(7L)).thenReturn(Optional.of(booking));
+        // The slot is re-read under a row lock before it is released.
+        when(slotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
 
         bookingService.cancelBooking(USER_ID, 7L);
 
@@ -196,5 +243,20 @@ class BookingServiceTest {
         assertNull(slot.getHoldExpiresAt());
         verify(bookingRepository).save(booking);
         verify(slotRepository).save(slot);
+    }
+
+    @Test
+    @DisplayName("holdSlot fails when venue is OFFLINE")
+    void holdSlot_fails_whenVenueIsOffline() {
+        slot.setVenueId(100L);
+        com.turfchai.venue.entity.Venue offlineVenue = com.turfchai.venue.entity.Venue.builder()
+                .id(100L)
+                .status("OFFLINE")
+                .build();
+        when(slotRepository.findByIdForUpdate(SLOT_ID)).thenReturn(Optional.of(slot));
+        when(venueRepository.findById(100L)).thenReturn(Optional.of(offlineVenue));
+
+        assertThrows(SlotUnavailableException.class, () -> bookingService.holdSlot(USER_ID, SLOT_ID));
+        verify(slotRepository, never()).save(any());
     }
 }

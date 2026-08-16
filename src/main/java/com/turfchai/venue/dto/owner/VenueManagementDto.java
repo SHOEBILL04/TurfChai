@@ -23,11 +23,13 @@ public record VenueManagementDto(
         String contactEmail,
         String depositPolicy,
         String cancelPolicy,
+        BigDecimal basePrice,
         boolean allowSplitPayment,
         boolean verified,
         boolean tournamentReady,
         boolean hasPromotion,
         String promotionLabel,
+        boolean mlPricingEnabled,
         List<String> photos,
         List<PitchDto> pitches,
         List<PricingRuleDto> pricingRules

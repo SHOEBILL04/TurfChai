@@ -1,12 +1,10 @@
 import { Suspense, lazy } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { RouteFallback } from '@/components/common/RouteFallback';
 import {
   BookingsSection,
-  NetworkSection,
   NotificationsSection,
   StatsSection,
-  TeamsSection,
   WalletSection,
 } from '@/pages/player/dashboard/PendingSections';
 import { AdminLayout } from '@/layouts/AdminLayout';
@@ -15,6 +13,10 @@ import { HostLayout } from '@/layouts/HostLayout';
 import { OwnerLayout } from '@/layouts/OwnerLayout';
 import { PlayerLayout } from '@/layouts/PlayerLayout';
 import { PublicLayout } from '@/layouts/PublicLayout';
+import RequireAdmin from '@/guards/RequireAdmin';
+import RequireAuth from '@/guards/RequireAuth';
+
+const OWNER_ROLES = ['OWNER', 'ADMIN', 'SUPER_ADMIN'];
 
 /* Every page is its own chunk so a first paint only ships one screen. */
 const Landing = lazy(() => import('@/public/LandingPage'));
@@ -31,8 +33,6 @@ const Checkout = lazy(() => import('@/pages/player/CheckoutPage'));
 const BookingSuccess = lazy(() => import('@/pages/player/BookingSuccessPage'));
 const Bookings = lazy(() => import('@/pages/player/BookingsPage'));
 const BookingDetail = lazy(() => import('@/pages/player/BookingDetailPage'));
-const SplitPayment = lazy(() => import('@/pages/player/SplitPaymentPage'));
-const PaymentRetry = lazy(() => import('@/pages/player/PaymentRetryPage'));
 const Matchday = lazy(() => import('@/pages/player/MatchdayPage'));
 const Review = lazy(() => import('@/pages/player/ReviewPage'));
 const Cancel = lazy(() => import('@/pages/player/CancelPage'));
@@ -62,7 +62,6 @@ const OwnerVenueSetup = lazy(() => import('@/pages/owner/VenueSetupPage'));
 const OwnerCustomers = lazy(() => import('@/pages/owner/CustomersPage'));
 const OwnerPromotions = lazy(() => import('@/pages/owner/PromotionsPage'));
 const OwnerReviews = lazy(() => import('@/pages/owner/ReviewsPage'));
-const OwnerStaff = lazy(() => import('@/pages/owner/StaffPage'));
 
 const AdminDashboard = lazy(() => import('@/pages/admin/DashboardPage'));
 const AdminTurfRequests = lazy(() => import('@/pages/admin/TurfRequestsPage'));
@@ -73,6 +72,7 @@ const AdminUsers = lazy(() => import('@/pages/admin/UsersPage'));
 const AdminUserGrowth = lazy(() => import('@/pages/admin/UserGrowthPage'));
 const AdminUserSegments = lazy(() => import('@/pages/admin/UserSegmentsPage'));
 const AdminActivity = lazy(() => import('@/pages/admin/ActivityPage'));
+const AdminPayouts = lazy(() => import('@/pages/admin/PayoutsPage'));
 const AdminAdmins = lazy(() => import('@/pages/admin/AdminsPage'));
 const AdminProfile = lazy(() => import('@/pages/admin/ProfilePage'));
 
@@ -92,35 +92,49 @@ export function AppRoutes() {
 
         <Route element={<PlayerLayout />}>
           <Route path="player">
+            {/*
+             * Public browsing surface. These mirror the endpoints the backend
+             * serves anonymously (catalogue, venue detail, open games), so a
+             * visitor can look around before creating an account. Checkout
+             * stays here on purpose: it renders a "sign in to confirm" state
+             * rather than personal data.
+             */}
             <Route index element={<PlayerHome />} />
-            <Route path="onboarding" element={<PlayerOnboarding />} />
             <Route path="explore" element={<Explore />} />
             <Route path="venues/:venueId" element={<Venue />} />
             <Route path="checkout" element={<Checkout />} />
-            <Route path="booking-success" element={<BookingSuccess />} />
-            <Route path="bookings" element={<Bookings />} />
-            <Route path="bookings/:bookingId" element={<BookingDetail />} />
-            <Route path="split-payment" element={<SplitPayment />} />
-            <Route path="payment-retry" element={<PaymentRetry />} />
-            <Route path="matchday" element={<Matchday />} />
-            <Route path="review" element={<Review />} />
-            <Route path="cancel" element={<Cancel />} />
-            <Route path="rewards" element={<Rewards />} />
-            <Route path="settings" element={<Navigate to="/player/dashboard/settings" replace />} />
-            <Route path="tournaments/:code" element={<TournamentDetail />} />
-            <Route path="tournaments/:code/register" element={<TournamentRegister />} />
 
-            <Route path="dashboard" element={<DashboardLayout />}>
-              <Route index element={<DashboardOverview />} />
-              <Route path="tournaments" element={<DashboardTournaments />} />
-              <Route path="venues" element={<DashboardVenues />} />
-              <Route path="bookings" element={<BookingsSection />} />
-              <Route path="teams" element={<TeamsSection />} />
-              <Route path="network" element={<NetworkSection />} />
-              <Route path="stats" element={<StatsSection />} />
-              <Route path="wallet" element={<WalletSection />} />
-              <Route path="notifications" element={<NotificationsSection />} />
-              <Route path="settings" element={<ProfileSettings />} />
+            {/* Everything below identifies the caller and needs a session. */}
+            <Route element={<RequireAuth><Outlet /></RequireAuth>}>
+              {/*
+               * The tournament read is authenticated server-side
+               * (PlayerTournamentRestController requires a principal), so
+               * leaving this public showed an anonymous visitor a dead
+               * "Authentication is required / Try again" panel. Guarding it
+               * sends them to sign in and back here afterwards.
+               */}
+              <Route path="tournaments/:code" element={<TournamentDetail />} />
+              <Route path="onboarding" element={<PlayerOnboarding />} />
+              <Route path="booking-success" element={<BookingSuccess />} />
+              <Route path="bookings" element={<Bookings />} />
+              <Route path="bookings/:bookingId" element={<BookingDetail />} />
+              <Route path="matchday" element={<Matchday />} />
+              <Route path="review" element={<Review />} />
+              <Route path="cancel" element={<Cancel />} />
+              <Route path="rewards" element={<Rewards />} />
+              <Route path="settings" element={<Navigate to="/player/dashboard/settings" replace />} />
+              <Route path="tournaments/:code/register" element={<TournamentRegister />} />
+
+              <Route path="dashboard" element={<DashboardLayout />}>
+                <Route index element={<DashboardOverview />} />
+                <Route path="tournaments" element={<DashboardTournaments />} />
+                <Route path="venues" element={<DashboardVenues />} />
+                <Route path="bookings" element={<BookingsSection />} />
+                <Route path="stats" element={<StatsSection />} />
+                <Route path="wallet" element={<WalletSection />} />
+                <Route path="notifications" element={<NotificationsSection />} />
+                <Route path="settings" element={<ProfileSettings />} />
+              </Route>
             </Route>
           </Route>
 
@@ -128,12 +142,14 @@ export function AppRoutes() {
             <Route index element={<Navigate to="open-games" replace />} />
             <Route path="open-games" element={<OpenGames />} />
             <Route path="games/:gameId" element={<GameDetail />} />
-            <Route path="alerts" element={<LfgAlerts />} />
-            <Route path="ticket" element={<Ticket />} />
+            <Route element={<RequireAuth><Outlet /></RequireAuth>}>
+              <Route path="alerts" element={<LfgAlerts />} />
+              <Route path="ticket" element={<Ticket />} />
+            </Route>
           </Route>
         </Route>
 
-        <Route path="host" element={<HostLayout />}>
+        <Route path="host" element={<RequireAuth><HostLayout /></RequireAuth>}>
           <Route index element={<Navigate to="/player?mode=host" replace />} />
           {/* The prototype's host/dashboard.html was only a redirect stub. */}
           <Route path="dashboard" element={<Navigate to="/player?mode=host" replace />} />
@@ -142,7 +158,7 @@ export function AppRoutes() {
           <Route path="reserve" element={<Reserve />} />
         </Route>
 
-        <Route path="owner" element={<OwnerLayout />}>
+        <Route path="owner" element={<RequireAuth roles={OWNER_ROLES}><OwnerLayout /></RequireAuth>}>
           <Route index element={<OwnerDashboard />} />
           <Route path="calendar" element={<OwnerCalendar />} />
           <Route path="bookings" element={<OwnerBookings />} />
@@ -151,10 +167,9 @@ export function AppRoutes() {
           <Route path="customers" element={<OwnerCustomers />} />
           <Route path="promotions" element={<OwnerPromotions />} />
           <Route path="reviews" element={<OwnerReviews />} />
-          <Route path="staff" element={<OwnerStaff />} />
         </Route>
 
-        <Route path="admin" element={<AdminLayout />}>
+        <Route path="admin" element={<RequireAdmin><AdminLayout /></RequireAdmin>}>
           <Route index element={<AdminDashboard />} />
           <Route path="turf-requests" element={<AdminTurfRequests />} />
           <Route path="turf-requests/:requestId" element={<AdminRequestReview />} />
@@ -164,6 +179,7 @@ export function AppRoutes() {
           <Route path="users/growth" element={<AdminUserGrowth />} />
           <Route path="users/segments" element={<AdminUserSegments />} />
           <Route path="activity" element={<AdminActivity />} />
+          <Route path="payouts" element={<AdminPayouts />} />
           <Route path="admins" element={<AdminAdmins />} />
           <Route path="profile" element={<AdminProfile />} />
         </Route>

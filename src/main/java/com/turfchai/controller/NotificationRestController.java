@@ -1,6 +1,6 @@
 package com.turfchai.controller;
 
-import com.turfchai.model.Notification;
+import com.turfchai.dto.response.NotificationResponse;
 import com.turfchai.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -17,8 +17,12 @@ public class NotificationRestController {
     private final NotificationService notificationService;
 
     @GetMapping
-    public List<Notification> listNotifications(@AuthenticationPrincipal com.turfchai.security.UserPrincipal userDetails) {
-        return notificationService.listForUser(userDetails.getId());
+    public List<NotificationResponse> listNotifications(
+            @AuthenticationPrincipal com.turfchai.security.UserPrincipal userDetails) {
+        return notificationService.listForUser(userDetails.getId())
+                .stream()
+                .map(NotificationResponse::from)
+                .toList();
     }
 
     @GetMapping("/unread-count")
@@ -27,7 +31,8 @@ public class NotificationRestController {
     }
 
     @PostMapping("/{id}/read")
-    public void markRead(@PathVariable Long id, @AuthenticationPrincipal com.turfchai.security.UserPrincipal userDetails) {
+    public void markRead(@PathVariable Long id,
+            @AuthenticationPrincipal com.turfchai.security.UserPrincipal userDetails) {
         notificationService.markRead(id, userDetails.getId());
     }
 

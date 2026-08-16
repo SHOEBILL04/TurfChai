@@ -4,57 +4,18 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/buttons/Button';
 import { ChartCanvas } from '@/components/charts/ChartCanvas';
 import { Chip } from '@/components/ui/Chip';
-import { KpiCard } from '@/components/cards/KpiCard';
 import { Overlay } from '@/components/modals/Overlay';
 import { PageTitle } from '@/components/common/PageTitle';
-import { SPORTS } from '@/data/owner';
+import { TableScroll } from '@/components/tables/TableScroll';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { useFilterChips } from '@/hooks/useFilterChips';
 import { useTheme } from '@/hooks/useTheme';
 import { useToast } from '@/hooks/useToast';
+import { useApi } from '@/hooks/useApi';
+import { fetchOwnerPayments } from '@/api/ownerPayments';
+import { downloadCsv } from '@/utils/deviceActions';
 import { paths } from '@/routes/paths';
-
-/* ═══ API-Ready mock data: sport × timeframe ═══ */
-const TF_LABELS = {
-  daily: ['2 Aug', '3 Aug', '4 Aug', '5 Aug', '6 Aug', '7 Aug', '8 Aug'],
-  weekly: ['W22', 'W23', 'W24', 'W25', 'W26', 'W27', 'W28', 'W29', 'W30', 'W31', 'W32', 'W33', 'W34', 'W35'],
-  monthly: ['Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'],
-  yearly: ['2022', '2023', '2024', '2025', '2026'],
-};
-
-const CHART_DATA = {
-  football: {
-    daily: [6200, 8400, 4100, 10200, 9800, 7600, 8900],
-    weekly: [42000, 49800, 45600, 54200, 51800, 47400, 56700, 60300, 53500, 50600, 58300, 61800, 55000, 59400],
-    monthly: [156000, 171000, 163000, 189000, 170000, 157000, 195000, 207000, 187000, 216000, 229000, 245000],
-    yearly: [980000, 1240000, 1650000, 2060000, 2368000],
-  },
-  cricket: {
-    daily: [3800, 4200, 3100, 5000, 4800, 3900, 4500],
-    weekly: [22000, 25600, 23800, 28400, 26900, 24800, 29400, 31200, 27800, 26200, 30100, 32000, 28500, 30800],
-    monthly: [78000, 85600, 81400, 94200, 84600, 78200, 97000, 103000, 93300, 107800, 114000, 121800],
-    yearly: [520000, 658000, 876000, 1094000, 1218000],
-  },
-  badminton: {
-    daily: [2400, 3200, 2000, 3400, 3200, 2700, 2965],
-    weekly: [14500, 16900, 15700, 18600, 17700, 16500, 19500, 20900, 18500, 17500, 20300, 21400, 19000, 20600],
-    monthly: [51000, 55400, 53600, 61800, 55400, 51800, 64000, 68000, 61700, 71200, 75000, 80000],
-    yearly: [350000, 442000, 594000, 736000, 882000],
-  },
-  futsal: {
-    daily: [1800, 2100, 1400, 2600, 2400, 1900, 2200],
-    weekly: [11200, 13400, 12200, 14800, 14100, 12900, 15300, 16500, 14600, 13800, 15900, 16800, 14900, 16200],
-    monthly: [38000, 41200, 39800, 46000, 41200, 38600, 47600, 50600, 45900, 53000, 55800, 59500],
-    yearly: [260000, 328000, 441000, 547000, 595000],
-  },
-  volleyball: {
-    daily: [1200, 1500, 900, 1800, 1700, 1300, 1600],
-    weekly: [8400, 9900, 9100, 10800, 10300, 9400, 11200, 11900, 10600, 10000, 11500, 12200, 10800, 11700],
-    monthly: [28500, 31200, 29700, 34400, 30900, 28600, 35500, 37700, 34200, 39500, 41800, 44600],
-    yearly: [195000, 246000, 327000, 409000, 468000],
-  },
-};
 
 const TIMEFRAMES = [
   { id: 'daily', label: 'Daily (7 Days)' },
@@ -63,200 +24,9 @@ const TIMEFRAMES = [
   { id: 'yearly', label: 'Yearly (5 Years)' },
 ];
 
-const KPIS = [
-  { label: 'Gross today', value: '৳19,750', delta: '14 transactions' },
-  { label: 'Platform fees', value: '−৳1,185', delta: '6% on online only' },
-  { label: 'Refunds', value: '−৳2,200', delta: '1 cancellation', trend: 'down' },
-  { label: 'Net to you', value: '৳16,365', delta: 'Settles Mon 11 Aug', trend: 'up', valueColor: 'var(--brand-600)' },
-];
-
 const METHOD_FILTERS = ['Today', 'bKash', 'Nagad', 'Cash', 'Card', 'Refunds', 'Unmatched'];
 
 const DANGER = { color: 'var(--danger)' };
-
-const LEDGER = [
-  {
-    id: 'tc-48291',
-    time: '6:12 PM',
-    booking: 'TC-48291',
-    customer: 'Rafiul Karim',
-    method: 'bKash · ',
-    txn: '8H2K19',
-    gross: '৳2,550',
-    fee: '−৳153',
-    net: '৳2,397',
-    status: { tone: 'green', text: 'Reconciled ✓' },
-    shift: 'Evening · Online',
-  },
-  {
-    id: 'og-7734',
-    time: '5:47 PM',
-    booking: 'OG-7734',
-    customer: 'Open game (10 shares)',
-    method: 'bKash / Nagad mix',
-    gross: '৳2,800',
-    fee: '−৳168',
-    net: '৳2,632',
-    status: { tone: 'green', text: 'Reconciled ✓' },
-    shift: 'Evening · Online',
-  },
-  {
-    id: 'tc-48277',
-    time: '4:02 PM',
-    booking: 'TC-48277',
-    customer: 'Tanvir Ahmed',
-    method: 'Card · Visa •••4412',
-    gross: '৳2,500',
-    fee: '−৳150',
-    net: '৳2,350',
-    status: { tone: 'green', text: 'Reconciled ✓' },
-    shift: 'Evening · Online',
-  },
-  {
-    id: 'tc-48288',
-    time: '3:05 PM',
-    booking: 'TC-48288',
-    customer: 'Walk-in customer',
-    method: 'Cash',
-    gross: '৳1,700',
-    fee: '—',
-    net: '৳1,700',
-    status: { tone: 'green', text: 'Logged by Sumon' },
-    shift: 'Afternoon · Walk-in',
-  },
-  {
-    id: 'tc-48285',
-    time: '1:22 PM',
-    booking: 'TC-48285',
-    customer: 'Karim Traders XI',
-    method: 'Nagad · ',
-    txn: 'N7761',
-    gross: '৳765',
-    fee: '−৳46',
-    net: '৳719',
-    status: { tone: 'amber', text: 'Deposit · ৳1,785 due' },
-    shift: 'Afternoon · Phone',
-  },
-  {
-    id: 'tc-48102',
-    time: '11:40 AM',
-    booking: 'TC-48102',
-    customer: 'Sadia Rahman',
-    method: 'bKash refund · ',
-    txn: 'R-2210',
-    gross: '−৳2,200',
-    grossStyle: DANGER,
-    fee: '+৳132',
-    net: '−৳2,068',
-    netStyle: DANGER,
-    status: { tone: 'blue', text: 'Refund sent' },
-    shift: 'Morning · Online',
-  },
-  {
-    id: 'unmatched',
-    time: '10:15 AM',
-    booking: '—',
-    customer: 'Unknown sender',
-    method: 'bKash · ',
-    txn: '5T9Q02',
-    gross: '৳1,700',
-    fee: '—',
-    net: '৳1,700',
-    status: { tone: 'amber', text: 'Unmatched' },
-    rowStyle: { background: 'var(--warn-soft)' },
-    shiftAction: { label: 'Match…', toast: 'Matched to TC-48293 deposit ✓' },
-  },
-];
-
-
-const METHOD_SPLIT = [
-  { id: 'bkash', label: 'bKash', value: '54% · ৳2,41,300', width: '54%' },
-  { id: 'cash', label: 'Cash', value: '21% · ৳93,800', width: '21%', color: 'var(--info)' },
-  { id: 'nagad', label: 'Nagad', value: '15% · ৳67,000', width: '15%', color: 'var(--warn)' },
-  { id: 'card', label: 'Card', value: '10% · ৳44,700', width: '10%', color: '#8B5CF6' },
-];
-
-
-const SPORT_FILTERS = [
-  { id: 'all', label: 'All Sports' },
-  { id: 'Football', label: '⚽ Football' },
-  { id: 'Cricket', label: '🏏 Cricket' },
-  { id: 'Futsal', label: '🥅 Futsal' },
-  { id: 'Badminton', label: '🏸 Badminton' },
-];
-
-
-const SPORT_REPORT = [
-  {
-    sport: 'Football',
-    title: '⚽ Football',
-    occ: { tone: 'blue', text: '88% Occ.' },
-    booked: '42 slots · ৳92,400',
-    missed: '5 slots · −৳11,000',
-    bar: { width: '88%' },
-    cta: 'View 5 missed slots →',
-    missedCount: '5 slots',
-    missedLoss: '৳11,000',
-    items: [
-      'Tue 2:00–3:30 PM (Off-peak unbooked)',
-      'Wed 10:00–11:30 AM (Rainy morning)',
-      'Thu 4:00–5:30 PM (Late cancellation)',
-      'Fri 1:00–2:30 PM (Jumma time window)',
-      'Sun 2:00–3:30 PM (Off-peak unbooked)',
-    ],
-  },
-  {
-    sport: 'Cricket',
-    title: '🏏 Cricket',
-    occ: { tone: 'amber', text: '94% Occ.' },
-    booked: '16 slots · ৳48,000',
-    missed: '1 slot · −৳3,000',
-    bar: { width: '94%', background: 'var(--warn)' },
-    cta: 'View 1 missed slot →',
-    missedCount: '1 slot',
-    missedLoss: '৳3,000',
-    items: ['Monday 10:00 AM–12:00 PM (Off-peak weekday)'],
-  },
-  {
-    sport: 'Futsal',
-    title: '🥅 Futsal',
-    occ: { tone: 'green', text: '76% Occ.' },
-    booked: '35 slots · ৳52,500',
-    missed: '8 slots · −৳12,000',
-    bar: { width: '76%', background: 'var(--success)' },
-    cta: 'View 8 missed slots →',
-    missedCount: '8 slots',
-    missedLoss: '৳12,000',
-    items: [
-      'Mon 2:00 PM (Unfilled)',
-      'Mon 3:00 PM (Unfilled)',
-      'Tue 1:00 PM (Off-peak)',
-      'Tue 2:00 PM (Off-peak)',
-      'Wed 11:00 AM (Unfilled)',
-      'Wed 12:00 PM (Unfilled)',
-      'Thu 2:00 PM (Off-peak)',
-      'Sun 1:00 PM (Unfilled)',
-    ],
-  },
-  {
-    sport: 'Badminton',
-    title: '🏸 Badminton',
-    occ: { tone: '', style: { background: 'var(--info-soft)', color: 'var(--info)' }, text: '82% Occ.' },
-    booked: '24 slots · ৳24,000',
-    missed: '4 slots · −৳4,000',
-    bar: { width: '82%', background: 'var(--info)' },
-    cta: 'View 4 missed slots →',
-    missedCount: '4 slots',
-    missedLoss: '৳4,000',
-    items: [
-      'Tue 11:00 AM (Unbooked)',
-      'Wed 10:00 AM (Unbooked)',
-      'Thu 11:20 AM (No-show)',
-      'Sat 1:00 PM (Off-peak)',
-    ],
-  },
-];
-
 
 const CURRENCY = (value) => `৳${value.toLocaleString('en-IN')}`;
 const AXIS_TICK = (v) =>
@@ -279,7 +49,10 @@ export default function PaymentsPage() {
   const methodChips = useFilterChips(['Today']);
 
   const [timeframe, setTimeframe] = useState('daily');
-  const [selectedSports, setSelectedSports] = useState(() => SPORTS.map((sport) => sport.key));
+  const fetchPaymentsFn = useCallback(() => fetchOwnerPayments(timeframe), [timeframe]);
+  const { data: apiSummary } = useApi(fetchPaymentsFn, [timeframe]);
+
+  const [selectedSports, setSelectedSports] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [sportFilter, setSportFilter] = useState('all');
   const [missed, setMissed] = useState(null);
@@ -289,31 +62,59 @@ export default function PaymentsPage() {
   useClickOutside(pickerRef, closePicker, pickerOpen);
   useEscapeKey(closePicker, pickerOpen);
 
+  // Dynamic configured sports list derived from backend API for this owner
+  const configuredSports = useMemo(() => {
+    if (Array.isArray(apiSummary?.configuredSports)) return apiSummary.configuredSports;
+    if (Array.isArray(apiSummary?.sports)) return apiSummary.sports;
+    return [];
+  }, [apiSummary]);
 
+  const chartDataApi = useMemo(() => (apiSummary?.chartData && typeof apiSummary.chartData === 'object') ? apiSummary.chartData : { labels: [], datasets: {} }, [apiSummary]);
+  const sportReport = Array.isArray(apiSummary?.sportReport) ? apiSummary.sportReport : [];
+  const methodSplit = Array.isArray(apiSummary?.methodSplit) ? apiSummary.methodSplit : [];
+  const KPIS = useMemo(() => Array.isArray(apiSummary?.kpis) ? apiSummary.kpis : [], [apiSummary]);
+  const LEDGER = useMemo(() => Array.isArray(apiSummary?.ledger) ? apiSummary.ledger : [], [apiSummary]);
+  const reconciliation = (apiSummary?.reconciliation && typeof apiSummary.reconciliation === 'object') ? apiSummary.reconciliation : {};
+  
   const dark = theme === 'dark';
 
+  // Dynamic sport filter options derived from configured sports
+  const sportFilters = useMemo(() => [
+    { id: 'all', label: 'All Sports' },
+    ...configuredSports.map((s) => ({ id: s.name, label: s.label || s.name }))
+  ], [configuredSports]);
+
   const chartData = useMemo(
-    () => ({
-      labels: TF_LABELS[timeframe],
-      datasets: selectedSports.map((key) => {
-        const sport = SPORTS.find((item) => item.key === key);
-        return {
-          label: sport.label,
-          data: CHART_DATA[key][timeframe],
-          borderColor: sport.color,
-          backgroundColor: (context) => makeGradient(context, sport.color),
-          borderWidth: 2.5,
-          tension: 0.4,
-          fill: true,
-          pointRadius: 3,
-          pointHoverRadius: 6,
-          pointBackgroundColor: sport.color,
-          pointBorderColor: dark ? '#10170F' : '#FFFFFF',
-          pointBorderWidth: 2,
-        };
-      }),
-    }),
-    [timeframe, selectedSports, dark],
+    () => {
+      const activeSports = selectedSports.length > 0 ? selectedSports : configuredSports.map(s => s.name);
+      return {
+        labels: chartDataApi.labels || [],
+        datasets: activeSports.map((name) => {
+          const sportObj = configuredSports.find((item) => item.name === name || item.key === name) || {
+            name,
+            label: name,
+            color: '#06B6D4'
+          };
+          const data = chartDataApi.datasets?.[name] || chartDataApi.datasets?.[sportObj.key] || [];
+          const color = sportObj.color || '#06B6D4';
+          return {
+            label: sportObj.label || sportObj.name,
+            data,
+            borderColor: color,
+            backgroundColor: (context) => makeGradient(context, color),
+            borderWidth: 2.5,
+            tension: 0.4,
+            fill: true,
+            pointRadius: 3,
+            pointHoverRadius: 6,
+            pointBackgroundColor: color,
+            pointBorderColor: dark ? '#10170F' : '#FFFFFF',
+            pointBorderWidth: 2,
+          };
+        }),
+      };
+    },
+    [chartDataApi, selectedSports, configuredSports, dark],
   );
 
   const chartOptions = useMemo(() => {
@@ -361,47 +162,119 @@ export default function PaymentsPage() {
     };
   }, [dark]);
 
-
-
-  function toggleSport(key) {
+  function toggleSport(name) {
     setSelectedSports((current) =>
-      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+      current.includes(name) ? current.filter((item) => item !== name) : [...current, name],
     );
   }
 
   function toggleAllSports(checked) {
-    setSelectedSports(checked ? SPORTS.map((sport) => sport.key) : []);
+    setSelectedSports(checked ? configuredSports.map((sport) => sport.name) : []);
   }
 
-  const allSelected = selectedSports.length === SPORTS.length;
+  const allSelected = configuredSports.length > 0 && selectedSports.length === configuredSports.length;
   const visibleSportCards =
-    sportFilter === 'all' ? SPORT_REPORT : SPORT_REPORT.filter((card) => card.sport === sportFilter);
+    sportFilter === 'all' ? sportReport : sportReport.filter((card) => card.sport === sportFilter);
+
+  const resolvedKpis = useMemo(() => {
+    return KPIS.map((kpi) => ({
+      label: kpi.label,
+      value: kpi.value,
+      delta: kpi.delta,
+      trend: kpi.trend,
+      valueColor: kpi.label === 'Net to you' ? 'var(--brand-600)' : undefined
+    }));
+  }, [KPIS]);
+
+  const resolvedLedger = useMemo(() => {
+    return LEDGER.map((row) => ({
+      id: row.id,
+      time: row.time,
+      booking: row.booking,
+      customer: row.customer,
+      method: row.method,
+      txn: row.txn,
+      gross: row.gross,
+      fee: row.fee,
+      net: row.net,
+      status: row.status || { tone: 'green', text: 'Settled' },
+      shift: row.shift,
+      grossStyle: row.isRefund ? DANGER : undefined,
+      netStyle: row.isRefund ? DANGER : undefined,
+    }));
+  }, [LEDGER]);
+
+  const handleExportCsv = () => {
+    downloadCsv(
+      `payments-ledger-${timeframe}.csv`,
+      ['Time', 'Booking', 'Customer', 'Method', 'Txn', 'Gross', 'Fee', 'Net', 'Status', 'Shift'],
+      resolvedLedger.map((row) => [
+        row.time ?? '',
+        row.booking ?? '',
+        row.customer ?? '',
+        row.method ?? '',
+        row.txn ?? '',
+        row.gross ?? '',
+        row.fee ?? '',
+        row.net ?? '',
+        row.status?.text ?? '',
+        row.shift ?? '',
+      ]),
+    );
+    showToast(`Exported ${resolvedLedger.length} transaction${resolvedLedger.length === 1 ? '' : 's'} \u2713`);
+  };
+
+  const handleExportSummary = () => {
+    const rows = [
+      ...resolvedKpis.map((kpi) => ['KPI', kpi.label, kpi.value]),
+      ...methodSplit.map((method) => [
+        'Payment method',
+        method.label ?? method.method ?? '',
+        method.value ?? method.amount ?? '',
+      ]),
+      ...sportReport.map((card) => ['Sport', card.label ?? card.sport ?? '', card.revenue ?? card.value ?? '']),
+    ];
+    downloadCsv(`payments-summary-${timeframe}.csv`, ['Section', 'Label', 'Value'], rows);
+    showToast('Summary report downloaded \u2713');
+  };
 
   return (
     <>
-      <PageTitle title="Payments" />
+      <PageTitle title="Payments & Reports" />
 
       <div className="main-header">
         <div>
           <h1>Payments &amp; reconciliation</h1>
-          <span className="subtle small">Friday 8 Aug · every taka accounted for</span>
+          <span className="subtle small">Real-time owner financials &amp; settlement statement</span>
         </div>
         <div className="row">
-          <Button onClick={() => showToast('Exported payments-2026-08-08.csv 📄')}>⬇ Export CSV</Button>
-          <Button variant="primary" onClick={() => showToast('Evening shift closing — see Staff & Shifts')}>
+          <Button
+            onClick={handleExportCsv}
+            disabled={resolvedLedger.length === 0}
+            title={resolvedLedger.length === 0 ? 'No transactions to export yet' : undefined}
+          >
+            ⬇ Export CSV
+          </Button>
+          <Button
+            variant="primary"
+            disabled
+            title="Shift and staff ledgers are not part of the platform yet — payments settle per booking."
+          >
             💵 Close shift
           </Button>
         </div>
       </div>
 
-
-
       {/* ═══════ Net Income Over Time Chart ═══════ */}
       <div className="card income-chart-card" style={{ marginBottom: 16, padding: '20px 24px 16px' }}>
         <div className="income-chart-header">
           <div className="income-chart-title-row">
-            <h3 style={{ margin: 0, fontSize: 18 }}>Net Income Over Time</h3>
-            <div className={`sport-picker${pickerOpen ? ' open' : ''}`} ref={pickerRef}>
+            <h2 style={{ margin: 0, fontSize: 18 }}>Net Income Over Time</h2>
+            <div
+              className={`sport-picker${pickerOpen ? ' open' : ''}`}
+              ref={pickerRef}
+              style={{ position: 'relative', display: 'inline-block' }}
+            >
               <div
                 className="sport-picker-trigger"
                 role="button"
@@ -416,83 +289,191 @@ export default function PaymentsPage() {
                     setPickerOpen((open) => !open);
                   }
                 }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '6px 14px',
+                  borderRadius: 10,
+                  background: dark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.04)',
+                  border: dark ? '1px solid rgba(255, 255, 255, 0.12)' : '1px solid rgba(0, 0, 0, 0.12)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  minHeight: 38,
+                  userSelect: 'none',
+                }}
               >
-                {selectedSports.length === 0 ? (
-                  <span className="sport-picker-placeholder">Select sports…</span>
-                ) : (
-                  [...selectedSports].reverse().map((key) => {
-                    const sport = SPORTS.find((item) => item.key === key);
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  {configuredSports.length === 0 ? (
+                    <span className="subtle small">No sports assigned to your pitches</span>
+                  ) : (selectedSports.length === 0 ? configuredSports.map(s => s.name) : selectedSports).map((name) => {
+                    const sport = configuredSports.find((item) => item.name === name) || { name, label: name, color: '#06B6D4' };
                     return (
                       <span
                         className="sport-tag"
-                        key={key}
-                        style={{ background: sport.tagBg }}
+                        key={name}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          padding: '2px 8px',
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          background: 'rgba(6,182,212,.15)',
+                          color: 'var(--text-1)',
+                        }}
                       >
-                        <span className="sport-tag-dot" style={{ background: sport.color }} />
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            background: sport.color || '#06B6D4',
+                          }}
+                        />
                         {sport.name}
                         <span
-                          className="sport-tag-x"
                           role="button"
                           tabIndex={0}
                           aria-label={`Remove ${sport.name}`}
                           onClick={(event) => {
                             event.stopPropagation();
-                            toggleSport(key);
+                            toggleSport(name);
                           }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              toggleSport(key);
-                            }
+                          style={{
+                            marginLeft: 2,
+                            cursor: 'pointer',
+                            opacity: 0.7,
+                            fontWeight: 700,
                           }}
                         >
                           ×
                         </span>
                       </span>
                     );
-                  })
-                )}
+                  })}
+                </div>
+                <span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 4 }}>▾</span>
               </div>
-              <div className="sport-picker-dropdown" role="listbox">
-                <label>
-                  <input
-                    type="checkbox"
-                    value="__all__"
-                    checked={allSelected}
-                    ref={(node) => {
-                      if (node) node.indeterminate = selectedSports.length > 0 && !allSelected;
+
+              <div
+                className="sport-picker-dropdown"
+                role="listbox"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  right: 0,
+                  zIndex: 99,
+                  minWidth: 220,
+                  padding: 8,
+                  borderRadius: 14,
+                  background: dark ? 'rgba(22, 34, 26, 0.96)' : 'rgba(255, 255, 255, 0.98)',
+                  backdropFilter: 'blur(16px)',
+                  WebkitBackdropFilter: 'blur(16px)',
+                  border: dark ? '1px solid rgba(255,255,255,0.15)' : '1px solid rgba(0,0,0,0.12)',
+                  boxShadow: dark ? '0 12px 32px rgba(0,0,0,0.5)' : '0 12px 32px rgba(0,0,0,0.18)',
+                  display: pickerOpen ? 'flex' : 'none',
+                  flexDirection: 'column',
+                  gap: 4,
+                }}
+              >
+                <div
+                  onClick={() => toggleAllSports(!allSelected)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '8px 12px',
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    background: allSelected ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
+                    color: allSelected ? 'var(--brand-500, #10B981)' : 'var(--text-1)',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: 5,
+                      border: '2px solid',
+                      borderColor: allSelected ? 'var(--brand-500)' : 'var(--text-3)',
+                      background: allSelected ? 'var(--brand-500)' : 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#fff',
+                      fontSize: 11,
+                      fontWeight: 900,
                     }}
-                    onChange={(event) => toggleAllSports(event.target.checked)}
-                  />{' '}
-                  Select All
-                </label>
-                <div className="sp-divider" />
-                {SPORTS.map((sport) => (
-                  <label key={sport.key}>
-                    <input
-                      type="checkbox"
-                      value={sport.key}
-                      checked={selectedSports.includes(sport.key)}
-                      onChange={() => toggleSport(sport.key)}
-                    />
-                    <span className="sp-color-dot" style={{ background: sport.color }} />
-                    {sport.label}
-                  </label>
-                ))}
+                  >
+                    {allSelected ? '✓' : ''}
+                  </span>
+                  Select All Configured Sports
+                </div>
+
+                <div style={{ height: 1, background: 'var(--border-soft)', margin: '4px 0' }} />
+
+                {configuredSports.map((sport) => {
+                  const isSelected = selectedSports.includes(sport.name);
+                  return (
+                    <div
+                      key={sport.name}
+                      onClick={() => toggleSport(sport.name)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px 12px',
+                        borderRadius: 10,
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        background: isSelected ? (dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)') : 'transparent',
+                        color: 'var(--text-1)',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: 4,
+                            border: '2px solid',
+                            borderColor: isSelected ? (sport.color || '#06B6D4') : 'var(--text-3)',
+                            background: isSelected ? (sport.color || '#06B6D4') : 'transparent',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#fff',
+                            fontSize: 10,
+                            fontWeight: 900,
+                          }}
+                        >
+                          {isSelected ? '✓' : ''}
+                        </span>
+                        <span>{sport.label || sport.name}</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
-          <div className="income-chart-filters" role="group" aria-label="Time range">
+
+          <div className="row-wrap" style={{ gap: 6 }} role="group" aria-label="Time range">
             {TIMEFRAMES.map((item) => (
-              <button
+              <Chip
                 key={item.id}
-                type="button"
-                className={`income-tf-btn${timeframe === item.id ? ' active' : ''}`}
-                onClick={() => setTimeframe(item.id)}
+                active={timeframe === item.id}
+                onToggle={() => setTimeframe(item.id)}
               >
                 {item.label}
-              </button>
+              </Chip>
             ))}
           </div>
         </div>
@@ -505,9 +486,9 @@ export default function PaymentsPage() {
         />
       </div>
 
-
+      {/* KPI Cards */}
       <div className="grid4" style={{ marginBottom: 16 }}>
-        {KPIS.map((kpi) => (
+        {resolvedKpis.map((kpi) => (
           <div className="kpi" key={kpi.label}>
             <span className="label">{kpi.label}</span>
             <b className="value num" style={kpi.valueColor ? { color: kpi.valueColor } : undefined}>
@@ -526,8 +507,8 @@ export default function PaymentsPage() {
         ))}
       </div>
 
-
-      <div className="card table-wrap" style={{ padding: 0, marginBottom: 16 }}>
+      {/* Ledger Table */}
+      <TableScroll label="Payment ledger" className="card" style={{ padding: 0, marginBottom: 16 }}>
         <table className="table">
           <thead>
             <tr>
@@ -543,8 +524,8 @@ export default function PaymentsPage() {
             </tr>
           </thead>
           <tbody>
-            {LEDGER.map((row) => (
-              <tr key={row.id} style={row.rowStyle}>
+            {resolvedLedger.map((row) => (
+              <tr key={row.id}>
                 <td className="num">{row.time}</td>
                 <td className="num">{row.booking}</td>
                 <td>{row.customer}</td>
@@ -562,58 +543,55 @@ export default function PaymentsPage() {
                 <td>
                   <Badge tone={row.status.tone}>{row.status.text}</Badge>
                 </td>
-                <td>
-                  {row.shiftAction ? (
-                    <Button size="sm" onClick={() => showToast(row.shiftAction.toast)}>
-                      {row.shiftAction.label}
-                    </Button>
-                  ) : (
-                    row.shift
-                  )}
-                </td>
+                <td>{row.shift}</td>
               </tr>
             ))}
+            {resolvedLedger.length === 0 && (
+              <tr>
+                <td colSpan={9} style={{ textAlign: 'center', padding: '24px 0' }}>
+                  No booking transactions logged yet
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
 
-
-
+      {/* Reconciliation Summary & Monthly Report */}
       <div className="grid2" style={{ alignItems: 'start' }} id="reports">
         <section className="card">
           <h3>Reconciliation summary</h3>
           <div className="stack-sm" style={{ marginTop: 10 }}>
             <div className="between small">
               <span className="muted">Online (bKash · Nagad · card)</span>
-              <b className="num">৳7,850 · auto-matched ✓</b>
+              <b className="num">{reconciliation.onlineMatched || '৳0 · auto-matched ✓'}</b>
             </div>
             <div className="between small">
               <span className="muted">Cash collected (staff-logged)</span>
-              <b className="num">৳1,700</b>
+              <b className="num">{reconciliation.cashCollected || '৳0'}</b>
             </div>
             <div className="between small">
               <span className="muted">Deposits outstanding</span>
               <b className="num" style={{ color: 'var(--warn)' }}>
-                ৳4,300
+                {reconciliation.depositsOutstanding || '৳0'}
               </b>
             </div>
             <div className="between small">
               <span className="muted">Unmatched incoming</span>
               <b className="num" style={{ color: 'var(--warn)' }}>
-                ৳1,700 (1)
+                {reconciliation.unmatchedIncoming || '৳0 (0)'}
               </b>
             </div>
           </div>
           <Alert tone="ok" icon="🧾" title="Cash drawer vs ledger" style={{ marginTop: 12 }}>
-            Afternoon shift closed by Sumon: expected ৳1,700, counted ৳1,700 — <b>balanced ✓</b>
+            {reconciliation.drawerStatus || '—'}
           </Alert>
         </section>
 
-
         <section className="card">
-          <h3>Reports · this month</h3>
+          <h3>Reports · method split</h3>
           <div className="stack-sm" style={{ marginTop: 10 }}>
-            {METHOD_SPLIT.map((method) => (
+            {methodSplit.map((method) => (
               <div key={method.id}>
                 <div className="between small">
                   <span className="muted">{method.label}</span>
@@ -624,42 +602,59 @@ export default function PaymentsPage() {
                 </div>
               </div>
             ))}
+            {methodSplit.length === 0 && (
+              <span className="muted small">No payment methods recorded yet</span>
+            )}
           </div>
           <div className="panel between" style={{ marginTop: 12 }}>
             <div>
-              <b className="small">Next settlement</b>
-              <div className="tiny subtle">Online net → City Bank •••2214</div>
+              <b className="small">Available Payout</b>
+              <div className="tiny subtle">Verified Net Earnings</div>
             </div>
-            <b className="num">৳48,220 · Mon 11 Aug</b>
+            <b className="num">{resolvedKpis.find((k) => k.label === 'Net to you')?.value || '৳0'}</b>
           </div>
-          <Button
-            size="sm"
-            style={{ marginTop: 10 }}
-            onClick={() => showToast('Monthly report generated 📈')}
-          >
-            Generate monthly report
-          </Button>
+          <div className="row-wrap" style={{ marginTop: 10, gap: 8 }}>
+            <Button
+              size="sm"
+              onClick={handleExportSummary}
+              disabled={resolvedKpis.length === 0 && methodSplit.length === 0 && sportReport.length === 0}
+              title={
+                resolvedKpis.length === 0 && methodSplit.length === 0 && sportReport.length === 0
+                  ? 'No figures to report yet'
+                  : undefined
+              }
+            >
+              Download summary report
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled
+              title="Digital invoices are not generated by the platform yet."
+            >
+              📄 Download digital invoice
+            </Button>
+          </div>
         </section>
       </div>
 
-
+      {/* Sport Performance Report */}
       <section className="card" style={{ marginTop: 16 }}>
         <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
           <div>
             <h3 style={{ margin: 0 }}>🏆 Sport Performance &amp; Missed Slots Report</h3>
             <p className="subtle small" style={{ margin: '2px 0 0' }}>
-              Detailed breakdown of revenue, occupancy, and missed/unbooked slots for each sport
+              Detailed breakdown of revenue, occupancy, and missed/unbooked slots for your configured sports
             </p>
           </div>
           <div className="row-wrap" style={{ gap: 6 }}>
-            {SPORT_FILTERS.map((filter) => (
+            {sportFilters.map((filter) => (
               <Chip key={filter.id} active={sportFilter === filter.id} onToggle={() => setSportFilter(filter.id)}>
                 {filter.label}
               </Chip>
             ))}
           </div>
         </div>
-
 
         <div className="grid4" style={{ marginTop: 14, gap: 10 }}>
           {visibleSportCards.map((card) => (
@@ -694,6 +689,11 @@ export default function PaymentsPage() {
               </Button>
             </div>
           ))}
+          {visibleSportCards.length === 0 && (
+            <div style={{ gridColumn: 'span 4', textAlign: 'center', padding: '24px 0' }} className="subtle small">
+              No sport performance data available for this owner.
+            </div>
+          )}
         </div>
       </section>
 
@@ -727,7 +727,7 @@ export default function PaymentsPage() {
 
         <h4 style={{ margin: '10px 0 6px' }}>Missed Slot Log &amp; Reasons</h4>
         <div className="stack-sm" style={{ maxHeight: 220, overflowY: 'auto' }}>
-          {missed?.items.map((item) => (
+          {missed?.items?.map((item) => (
             <div className="panel between" key={item}>
               <span className="small">{item}</span>
               <Badge tone="red" dot={false}>

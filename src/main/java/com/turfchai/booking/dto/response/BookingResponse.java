@@ -44,6 +44,18 @@ public class BookingResponse {
     @Schema(description = "Venue area", example = "Dhanmondi")
     private String venueArea;
 
+    @Schema(description = "Venue street address, for directions", example = "Road 27, Dhanmondi")
+    private String venueAddress;
+
+    @Schema(description = "Venue latitude, for directions", example = "23.7461")
+    private BigDecimal venueLat;
+
+    @Schema(description = "Venue longitude, for directions", example = "90.3742")
+    private BigDecimal venueLng;
+
+    @Schema(description = "Venue phone, for the contact action", example = "+8801700000000")
+    private String venueContactPhone;
+
     @Schema(description = "Pitch booked", example = "7")
     private Long pitchId;
 
@@ -64,6 +76,12 @@ public class BookingResponse {
 
     @Schema(description = "Net amount for this booking", example = "2500.00")
     private BigDecimal netAmount;
+
+    @Schema(description = "Promo code redeemed for this booking, if any", example = "RAMADAN20")
+    private String promoCode;
+
+    @Schema(description = "Discount the promo code was worth", example = "500.00")
+    private BigDecimal discountAmount;
 
     @Schema(description = "When the player checked in at the gate")
     private OffsetDateTime checkedInAt;

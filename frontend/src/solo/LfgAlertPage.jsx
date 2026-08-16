@@ -17,6 +17,7 @@ import { useApi } from '@/hooks/useApi';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/hooks/useToast';
 import { paths } from '@/routes/paths';
+import { Chip } from '@/components/ui/Chip';
 import { formatBdt } from '@/utils/format';
 
 const SPORTS = [
@@ -85,7 +86,7 @@ function formatStamp(value) {
 }
 
 /** One saved alert: pause/resume switch, delete, and the games it matches now. */
-function AlertRow({ alert, userId, onChanged }) {
+function AlertRow({ alert, onChanged }) {
   const { showToast } = useToast();
   const [busy, setBusy] = useState(false);
   const matches = useApi(() => getLfgAlertMatches(alert.id), [alert.id]);
@@ -99,7 +100,7 @@ function AlertRow({ alert, userId, onChanged }) {
   const setEnabled = async (enabled) => {
     setBusy(true);
     try {
-      await updateLfgAlertStatus(alert.id, userId, enabled ? 'ACTIVE' : 'PAUSED');
+      await updateLfgAlertStatus(alert.id, enabled ? 'ACTIVE' : 'PAUSED');
       showToast(enabled ? 'Alert resumed — watching again' : 'Alert paused');
       onChanged();
     } catch (error) {
@@ -112,7 +113,7 @@ function AlertRow({ alert, userId, onChanged }) {
   const onDelete = async () => {
     setBusy(true);
     try {
-      await deleteLfgAlert(alert.id, userId);
+      await deleteLfgAlert(alert.id);
       showToast('Alert deleted');
       onChanged();
     } catch (error) {
@@ -198,7 +199,7 @@ export default function LfgAlertPage() {
   const [lastCreated, setLastCreated] = useState(null);
 
   const { data, loading, error, reload } = useApi(
-    () => (userId ? listLfgAlerts(userId) : Promise.resolve([])),
+    () => (userId ? listLfgAlerts() : Promise.resolve([])),
     [userId],
   );
   const alerts = Array.isArray(data) ? data : [];
@@ -210,7 +211,6 @@ export default function LfgAlertPage() {
     setSaving(true);
     try {
       const created = await createLfgAlert({
-        userId,
         sportName: sport,
         area,
         preferredDays: days,
@@ -263,14 +263,13 @@ export default function LfgAlertPage() {
                 <label>Sport</label>
                 <div className="row-wrap">
                   {SPORTS.map((option) => (
-                    <button
+                    <Chip
                       key={option.value}
-                      className={sport === option.value ? 'chip on' : 'chip'}
-                      type="button"
-                      onClick={() => setSport(option.value)}
+                      active={sport === option.value}
+                      onToggle={() => setSport(option.value)}
                     >
                       {option.label}
-                    </button>
+                    </Chip>
                   ))}
                 </div>
               </div>
@@ -323,14 +322,13 @@ export default function LfgAlertPage() {
                 <label>Skill level</label>
                 <div className="row-wrap">
                   {SKILLS.map((option) => (
-                    <button
+                    <Chip
                       key={option.value}
-                      className={skill === option.value ? 'chip on' : 'chip'}
-                      type="button"
-                      onClick={() => setSkill(option.value)}
+                      active={skill === option.value}
+                      onToggle={() => setSkill(option.value)}
                     >
                       {option.label}
-                    </button>
+                    </Chip>
                   ))}
                 </div>
               </div>
@@ -366,7 +364,7 @@ export default function LfgAlertPage() {
                   </p>
                 ) : (
                   alerts.map((alert) => (
-                    <AlertRow key={alert.id} alert={alert} userId={userId} onChanged={reload} />
+                    <AlertRow key={alert.id} alert={alert} onChanged={reload} />
                   ))
                 )}
               </div>

@@ -1,39 +1,33 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { BackButton } from '@/components/buttons/BackButton';
 import { KpiCard } from '@/components/cards/KpiCard';
 import { useApi } from '@/hooks/useApi';
+import { useHostTournamentCode } from './useHostTournamentCode';
 import {
-  DEMO_TOURNAMENT_CODE,
   getTournament,
+  payBalance,
+  updateTournamentSettings,
+  regenerateInviteCode,
+  generateFixtures,
+  registerTeam,
   bdt,
   formatTime,
   formatDate,
 } from '@/api/tournaments';
 import { useToast } from '@/hooks/useToast';
+import { toUserMessage } from '@/utils/errorMessage';
+import { canCall, callNumber } from '@/utils/deviceActions';
 import { paths } from '@/routes/paths';
 
-const KPIS = [
-  { id: 'days', label: 'Days to kickoff', value: '12', delta: 'On track', trend: 'up' },
-  { id: 'fees', label: 'Entry fees collected', value: '40%', delta: '৳17,120 / ৳42,800' },
-  { id: 'teams', label: 'Teams registered', value: '13 / 16', delta: '▲ 4 this week', trend: 'up' },
-  { id: 'slots', label: 'Slots reserved', value: '14', delta: '3 pitches · 8 AM–6 PM' },
-];
-
-const TEAM_CHIPS = [
-  { id: 'strikers', label: 'Dhanmondi Strikers', on: true },
-  { id: 'kings', label: 'Mirpur Kings', on: true },
-  { id: 'uttara', label: 'Uttara FC', on: true },
-  { id: 'banani', label: 'Banani Blues', on: true },
-  { id: 'more', label: '+9 more', on: true },
-  { id: 'spots', label: '3 spots left', on: false },
-];
-
-const CANCELLATION_TERMS = [
-  { id: 'until-16', state: null, title: 'Until 16 Aug', body: 'Full refund of deposit' },
-  { id: '17-20', state: 'pending', title: '17 – 20 Aug', body: '50% refund' },
-  { id: 'after-20', state: 'pending', title: 'After 20 Aug', body: 'No refund · reschedule credit only' },
+// Shown before the tournament arrives, or if it cannot be loaded. Every value
+// is a dash: this card used to display another tournament's figures — 12 days
+// to kickoff, 13/16 teams, ৳17,120 collected — as if they were this one's.
+const EMPTY_KPIS = [
+  { id: 'days', label: 'Days to kickoff', value: '—' },
+  { id: 'fees', label: 'Entry fees collected', value: '—' },
+  { id: 'teams', label: 'Teams registered', value: '—' },
+  { id: 'slots', label: 'Slots reserved', value: '—' },
 ];
 
 const PRIVACY_HINTS = {
@@ -41,17 +35,13 @@ const PRIVACY_HINTS = {
   open: 'Listed publicly — any team on TurfChai can find this tournament and request to join.',
 };
 
-const INVITE_LINK = 'turfchai.app/t/ramadan-cup-0091';
-
 export default function TournamentPage() {
   const { showToast } = useToast();
-  const [params] = useSearchParams();
-  const code = params.get('code') ?? DEMO_TOURNAMENT_CODE;
-  const tournament = useApi(() => getTournament(code), [code]);
+  const { code, loading: resolvingCode } = useHostTournamentCode();
+  const tournament = useApi(() => (code ? getTournament(code) : Promise.resolve(null)), [code]);
   const live = tournament.data;
 
-  // Derived view-model: live API data when available, prototype copy while
-  // loading or if the backend is unreachable.
+  // Live API data, or dashes until it arrives.
   const header = live
     ? {
         name: live.name,
@@ -112,7 +102,7 @@ export default function TournamentPage() {
           delta: `${new Set(live.reservations.map((r) => r.pitchName)).size} pitches · ${header.window}`,
         },
       ]
-    : KPIS;
+    : EMPTY_KPIS;
 
   const scheduleRows = live
     ? live.fixtures.map((fixture) => ({
@@ -136,9 +126,11 @@ export default function TournamentPage() {
           ? [{ id: 'spots', label: `${live.teamCapacity - live.teams.length} spots left`, on: false }]
           : []),
       ]
-    : TEAM_CHIPS;
+    : [];
 
-  const inviteLink = live ? `turfchai.app/${live.inviteCode}` : INVITE_LINK;
+  // A real link or nothing: the fallback used to be another tournament's code,
+  // which any host could have copied and handed to their teams.
+  const inviteLink = live?.inviteCode ? `turfchai.app/${live.inviteCode}` : '';
 
   const livePrivacy = live?.privacy === 'INVITE_ONLY' ? 'invite' : live?.privacy ? 'open' : null;
   const [privacyOverride, setPrivacyOverride] = useState(null);
@@ -148,26 +140,113 @@ export default function TournamentPage() {
     ? { DRAFT: 'Draft · not published', PUBLISHED: 'Published · taking teams', CONFIRMED: 'Venue confirmed · slots reserved' }[
         live.status
       ] ?? live.status
-    : 'Venue confirmed · deposit paid';
-  const formatLabel = live?.format ? live.format.toLowerCase().replaceAll('_', '-') : 'knockout';
+    : '—';
+  const formatLabel = live?.format ? live.format.toLowerCase().replaceAll('_', '-') : '—';
   const depositPct = live && Number(live.costs.total) > 0
     ? Math.round((Number(live.costs.deposit) / Number(live.costs.total)) * 100)
-    : 40;
+    : 0;
   const teamsDue = live ? live.teams.filter((team) => team.entryFeeStatus !== 'PAID').length : null;
 
-  const [notes, setNotes] = useState(
-    'Referees arrive 7:30 AM. PA system check 7:45. Trophy table near Pitch D.',
-  );
+  const [notes, setNotes] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [newTeamName, setNewTeamName] = useState('');
+  const [newTeamCaptain, setNewTeamCaptain] = useState('');
+  const notesValue = notes ?? live?.hostNotes ?? '';
+  const balancePaid = live?.balance?.status === 'PAID';
+  const depositPaid = live?.deposit?.status === 'PAID';
+  const venueContact = live?.venueContact ?? null;
+
+  /** Runs one host action, keeping the button single-flight and never claiming a success that did not happen. */
+  const runHostAction = async (key, action, successMessage, fallbackMessage) => {
+    if (busy) return;
+    setBusy(key);
+    try {
+      await action();
+    } catch (error) {
+      showToast(toUserMessage(error, fallbackMessage));
+      return;
+    } finally {
+      setBusy(null);
+    }
+    tournament.reload();
+    showToast(successMessage);
+  };
 
   const changePrivacy = (next) => {
-    setPrivacyOverride(next);
-    showToast(next === 'invite' ? '🔒 Tournament is now invite-only' : '🌐 Tournament is now open to everyone');
+    if (!live) return;
+    runHostAction(
+      `privacy-${next}`,
+      async () => {
+        await updateTournamentSettings(code, { privacy: next === 'invite' ? 'invite_only' : 'open' });
+        setPrivacyOverride(next);
+      },
+      next === 'invite'
+        ? '🔒 Tournament is now invite-only'
+        : '🌐 Tournament is now open to everyone',
+      'Could not change the tournament privacy.',
+    );
   };
 
-  const copyInvite = () => {
-    navigator.clipboard?.writeText(inviteLink);
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard?.writeText(inviteLink);
+    } catch {
+      showToast('Could not copy — select the link and copy it manually.');
+      return;
+    }
     showToast('🔗 Invite link copied — share it with team captains');
   };
+
+  // A host with no tournament yet has nothing to retry — that is an empty
+  // state, not a failure.
+  if (!resolvingCode && !code) {
+    return (
+      <>
+        <PageTitle title="Tournament" />
+        <div className="wrap" style={{ paddingTop: 20, maxWidth: 1100, paddingBottom: 60 }}>
+          <BackButton to={paths.host.hub}>Host hub</BackButton>
+          <div className="card" style={{ padding: 24, marginTop: 12 }}>
+            <h1 style={{ fontSize: 20, marginBottom: 6 }}>No tournament yet</h1>
+            <p className="subtle" style={{ marginBottom: 14 }}>
+              Reserve the pitches you need and your host workspace opens here.
+            </p>
+            <a className="btn btn-primary" href={paths.host.multiPitch}>
+              Reserve pitches
+            </a>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // An authorization failure must not be papered over with sample content:
+  // rendering a populated host workspace (invite links, venue contact, private
+  // notes) after the server said "no" misrepresents what the caller can see.
+  const deniedStatus = tournament.error?.status;
+  if (deniedStatus === 401 || deniedStatus === 403 || deniedStatus === 404) {
+    const notFound = deniedStatus === 404;
+    return (
+      <>
+        <PageTitle title="Tournament" />
+        <div className="wrap" style={{ paddingTop: 20, maxWidth: 1100, paddingBottom: 60 }}>
+          <BackButton to={paths.host.hub}>Host hub</BackButton>
+          <div className="card" style={{ padding: 24, marginTop: 12 }}>
+            <h1 style={{ fontSize: 20, marginBottom: 6 }}>
+              {notFound ? 'Tournament not found' : 'You do not host this tournament'}
+            </h1>
+            <p className="subtle" style={{ marginBottom: 14 }}>
+              {notFound
+                ? `No tournament matches ${code}.`
+                : 'Only the organiser who created a tournament can open its host workspace.'}
+            </p>
+            <button className="btn btn-secondary" type="button" onClick={tournament.reload}>
+              Try again
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -180,7 +259,7 @@ export default function TournamentPage() {
           <div className="alert warn" style={{ marginBottom: 12 }}>
             <span className="ico">⚠️</span>
             <div className="tiny">
-              Couldn’t load live tournament data — showing sample content.{' '}
+              Couldn’t load live tournament data — the figures below are unavailable, not zero.{' '}
               <button className="btn btn-sm btn-tertiary" type="button" onClick={tournament.reload}>
                 Retry
               </button>
@@ -204,9 +283,30 @@ export default function TournamentPage() {
           <button
             className="btn btn-primary"
             type="button"
-            onClick={() => showToast(`Balance paid ${header.balance} via bKash ✓ — reservation fully paid`)}
+            disabled={!live || balancePaid || !depositPaid || busy !== null}
+            title={
+              !live
+                ? 'Tournament is still loading'
+                : !depositPaid
+                  ? 'Pay the deposit first'
+                  : balancePaid
+                    ? 'The balance is already settled'
+                    : undefined
+            }
+            onClick={() =>
+              runHostAction(
+                'balance',
+                () => payBalance(code, { method: 'bKash' }),
+                `Balance paid ${header.balance} ✓ — reservation fully paid`,
+                'Could not take the balance payment.',
+              )
+            }
           >
-            Pay balance · {header.balance}
+            {balancePaid
+              ? 'Balance paid ✓'
+              : busy === 'balance'
+                ? 'Paying…'
+                : `Pay balance · ${header.balance}`}
           </button>
         </div>
 
@@ -269,9 +369,22 @@ export default function TournamentPage() {
                 className="btn btn-sm btn-secondary"
                 type="button"
                 style={{ marginTop: 8 }}
-                onClick={() => showToast('Schedule editor — drag fixtures between pitches & times')}
+                disabled={!live || busy !== null}
+                title={live ? 'Rebuilds the bracket from teams whose entry fee is paid' : 'Tournament is still loading'}
+                onClick={() =>
+                  runHostAction(
+                    'fixtures',
+                    () => generateFixtures(code),
+                    'Fixtures generated ✓',
+                    'Could not generate fixtures.',
+                  )
+                }
               >
-                Edit schedule
+                {busy === 'fixtures'
+                  ? 'Generating…'
+                  : scheduleRows.length > 0
+                    ? 'Regenerate fixtures'
+                    : 'Generate fixtures'}
               </button>
             </div>
 
@@ -287,6 +400,45 @@ export default function TournamentPage() {
                   </span>
                 ))}
               </div>
+
+              <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: 'wrap' }}>
+                <input
+                  className="input"
+                  style={{ flex: '1 1 160px' }}
+                  aria-label="Team name"
+                  placeholder="Team name"
+                  value={newTeamName}
+                  onChange={(event) => setNewTeamName(event.target.value)}
+                />
+                <input
+                  className="input"
+                  style={{ flex: '1 1 160px' }}
+                  aria-label="Captain name"
+                  placeholder="Captain (optional)"
+                  value={newTeamCaptain}
+                  onChange={(event) => setNewTeamCaptain(event.target.value)}
+                />
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  disabled={!live || !newTeamName.trim() || busy !== null}
+                  title={live ? undefined : 'Tournament is still loading'}
+                  onClick={() =>
+                    runHostAction(
+                      'team',
+                      async () => {
+                        await registerTeam(code, newTeamName.trim(), newTeamCaptain.trim() || undefined);
+                        setNewTeamName('');
+                        setNewTeamCaptain('');
+                      },
+                      'Team added ✓',
+                      'Could not add that team.',
+                    )
+                  }
+                >
+                  {busy === 'team' ? 'Adding…' : '+ Add team'}
+                </button>
+              </div>
             </div>
 
             <div className="card">
@@ -298,7 +450,7 @@ export default function TournamentPage() {
                 className="input"
                 rows="3"
                 style={{ marginTop: 10, resize: 'vertical' }}
-                value={notes}
+                value={notesValue}
                 onChange={(event) => setNotes(event.target.value)}
                 aria-label="Event-day notes"
               />
@@ -306,9 +458,27 @@ export default function TournamentPage() {
                 className="btn btn-sm btn-secondary"
                 type="button"
                 style={{ marginTop: 8 }}
-                onClick={() => showToast('Notes saved ✓')}
+                disabled={!live || busy !== null || notesValue === (live?.hostNotes ?? '')}
+                title={
+                  !live
+                    ? 'Tournament is still loading'
+                    : notesValue === (live?.hostNotes ?? '')
+                      ? 'No changes to save'
+                      : undefined
+                }
+                onClick={() =>
+                  runHostAction(
+                    'notes',
+                    async () => {
+                      await updateTournamentSettings(code, { hostNotes: notesValue });
+                      setNotes(null);
+                    },
+                    'Notes saved ✓',
+                    'Could not save your notes.',
+                  )
+                }
               >
-                Save notes
+                {busy === 'notes' ? 'Saving…' : 'Save notes'}
               </button>
             </div>
           </div>
@@ -353,10 +523,16 @@ export default function TournamentPage() {
                       className="input"
                       readOnly
                       value={inviteLink}
+                      placeholder="No invite link yet"
                       aria-label="Invite link"
                       style={{ flex: 1 }}
                     />
-                    <button className="btn btn-secondary" type="button" onClick={copyInvite}>
+                    <button
+                      className="btn btn-secondary"
+                      type="button"
+                      onClick={copyInvite}
+                      disabled={!inviteLink}
+                    >
                       Copy
                     </button>
                   </div>
@@ -364,9 +540,18 @@ export default function TournamentPage() {
                     className="btn btn-sm btn-tertiary"
                     type="button"
                     style={{ marginTop: 8 }}
-                    onClick={() => showToast('🔄 Old link disabled — new invite link generated')}
+                    disabled={!live || busy !== null}
+                    title={live ? 'The current link stops working immediately' : 'Tournament is still loading'}
+                    onClick={() =>
+                      runHostAction(
+                        'invite',
+                        () => regenerateInviteCode(code),
+                        '🔄 Old link disabled — new invite link generated',
+                        'Could not regenerate the invite link.',
+                      )
+                    }
                   >
-                    Regenerate link
+                    {busy === 'invite' ? 'Regenerating…' : 'Regenerate link'}
                   </button>
                 </div>
               ) : null}
@@ -374,50 +559,55 @@ export default function TournamentPage() {
 
             <div className="card">
               <b style={{ fontFamily: 'var(--font-display)' }}>Venue contact</b>
-              <div className="panel between" style={{ marginTop: 10 }}>
-                <div className="row" style={{ gap: 8 }}>
-                  <span className="avatar b">JU</span>
-                  <div>
-                    <b className="small">Jashim Uddin</b>
-                    <div className="tiny subtle">Owner · Mirpur Sports City</div>
+              {venueContact ? (
+                <div className="panel between" style={{ marginTop: 10 }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <span className="avatar b">{venueContact.initials}</span>
+                    <div>
+                      <b className="small">{venueContact.name}</b>
+                      <div className="tiny subtle">Owner · {header.venue}</div>
+                    </div>
+                  </div>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      type="button"
+                      disabled={!canCall(venueContact.phone)}
+                      title={canCall(venueContact.phone) ? `Call ${venueContact.phone}` : 'No phone number on file'}
+                      onClick={() => callNumber(venueContact.phone)}
+                    >
+                      Call
+                    </button>
+                    <button
+                      className="btn btn-sm btn-tertiary"
+                      type="button"
+                      disabled
+                      title="In-app messaging is not available yet — use the phone number."
+                    >
+                      Chat
+                    </button>
                   </div>
                 </div>
-                <div className="row" style={{ gap: 6 }}>
-                  <button
-                    className="btn btn-sm btn-secondary"
-                    type="button"
-                    onClick={() => showToast('Calling +880 1713 442 210 📞')}
-                  >
-                    Call
-                  </button>
-                  <button
-                    className="btn btn-sm btn-tertiary"
-                    type="button"
-                    onClick={() => showToast('Chat opened 💬')}
-                  >
-                    Chat
-                  </button>
-                </div>
-              </div>
+              ) : (
+                <p className="tiny subtle" style={{ marginTop: 10 }}>
+                  {tournament.loading ? 'Loading…' : 'No contact on file for this venue yet.'}
+                </p>
+              )}
             </div>
 
             <div className="card">
               <h3>Cancellation terms</h3>
-              <ul className="tline" style={{ marginTop: 8 }}>
-                {CANCELLATION_TERMS.map((term) => (
-                  <li key={term.id} className={term.state ?? undefined}>
-                    <b className="small">{term.title}</b>
-                    <p className="tiny muted" style={{ margin: 0 }}>
-                      {term.body}
-                    </p>
-                  </li>
-                ))}
-              </ul>
+              <p className="tiny muted" style={{ margin: '8px 0 0' }}>
+                TurfChai does not publish a refund schedule for tournament
+                reservations. Talk to support before your balance due date
+                {header.balanceDue !== '—' ? ` (${header.balanceDue})` : ''}.
+              </p>
               <button
                 className="btn btn-sm btn-ghost-danger"
                 type="button"
                 style={{ marginTop: 8 }}
-                onClick={() => showToast('Cancellation flow — refund preview shown before you confirm')}
+                disabled
+                title="Cancelling a tournament reservation is handled by support — self-service cancellation is not available yet."
               >
                 Cancel reservation…
               </button>

@@ -1,13 +1,12 @@
-import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { PageTitle } from "@/components/common/PageTitle";
 import { Button } from "@/components/buttons/Button";
 import { Breadcrumbs } from "@/components/navigation/Breadcrumbs";
 import { getBooking } from "@/api/bookings";
-import { getPaymentsForBooking, getRefundPreview, cancelAndRefund } from "@/api/payments";
+import { getPaymentsForBooking, getRefundPreview } from "@/api/payments";
 import { getUser } from "@/api/client";
 import { useApi } from "@/hooks/useApi";
-import { useToast } from "@/hooks/useToast";
+import { canCall, canGetDirections, callNumber, openDirections } from "@/utils/deviceActions";
 import { paths } from "@/routes/paths";
 import "./BookingDetailPage.css";
 
@@ -49,10 +48,8 @@ function formatDateTime(iso) {
 
 export default function BookingDetailPage() {
   const { bookingId } = useParams();
-  const { showToast } = useToast();
-  const [cancelling, setCancelling] = useState(false);
 
-  const { data: booking, loading, error, reload } = useApi(
+  const { data: booking, loading, error } = useApi(
     () => getBooking(bookingId),
     [bookingId],
   );
@@ -62,6 +59,14 @@ export default function BookingDetailPage() {
     [bookingId],
   );
   const payments = paymentsApi.data ?? [];
+
+  const venueForActions = {
+    name: booking?.venueName,
+    address: booking?.venueAddress,
+    area: booking?.venueArea,
+    lat: booking?.venueLat,
+    lng: booking?.venueLng,
+  };
 
   const refundPreviewApi = useApi(
     () => (bookingId && booking?.status === "CONFIRMED" ? getRefundPreview(bookingId) : Promise.resolve(null)),
@@ -75,24 +80,6 @@ export default function BookingDetailPage() {
     Number(booking.userId) === Number(currentUser.id);
 
   const badge = STATUS_BADGE[booking?.status] ?? STATUS_BADGE.CONFIRMED;
-
-  const onCancel = async () => {
-    setCancelling(true);
-    try {
-      const result = await cancelAndRefund(bookingId);
-      showToast(
-        result.refundAmount > 0
-          ? `Booking cancelled — ${bdt(result.refundAmount)} refund recorded`
-          : "Booking cancelled — no refund under this venue's policy at this time",
-      );
-      reload();
-      paymentsApi.reload();
-    } catch (cancelError) {
-      showToast(cancelError.message || "Could not cancel this booking");
-    } finally {
-      setCancelling(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -134,6 +121,8 @@ export default function BookingDetailPage() {
       : "—";
 
   const facts = [
+    { id: "venue", label: "VENUE", value: booking?.venueName || "—" },
+    { id: "pitch", label: "PITCH", value: booking?.pitchName || "—" },
     { id: "date", label: "DATE", value: formatDate(booking?.bookingDate) || "—" },
     { id: "play", label: "PLAY TIME", value: playTime, num: true },
     { id: "handover", label: "ARRIVE BY", value: "10 min early" },
@@ -149,17 +138,37 @@ export default function BookingDetailPage() {
           id: `payment-${p.id}`,
           title:
             p.type === "REFUND"
-              ? `Refund of ${bdt(p.amount)} recorded`
-              : p.status === "SUCCESS"
-                ? `${p.method} payment received — ${bdt(p.amount)}`
-                : `${p.method} payment declined — ${bdt(p.amount)}`,
+              ? p.fromWallet
+                ? `${bdt(p.amount)} returned to your wallet`
+                : `Refund of ${bdt(p.amount)} recorded`
+              : p.fromWallet
+                ? `Wallet credit applied — ${bdt(p.amount)}`
+                : p.status === "SUCCESS"
+                  ? `${p.method} payment received — ${bdt(p.amount)}`
+                  : `${p.method} payment declined — ${bdt(p.amount)}`,
           when: `${formatDateTime(p.paidAt || p.createdAt)}${p.txnReference ? ` · ${p.txnReference}` : ""}`,
           state: p.status === "FAILED" ? "pending" : undefined,
         })),
   ];
 
-  const successfulPayment = payments.find((p) => p.type === "BOOKING" && p.status === "SUCCESS");
+  // A split payment writes one row per tender, so the total has to be a sum.
+  // Reading a single row reported only the first leg as the amount paid.
+  const settledTotal = payments
+    .filter((p) => p.type === "BOOKING" && p.status !== "FAILED")
+    .reduce((sum, p) => sum + Number(p.amount ?? 0), 0);
   const refundPayment = payments.find((p) => p.type === "REFUND");
+  const refundedTotal = payments
+    .filter((p) => p.type === "REFUND" && p.status !== "FAILED")
+    .reduce((sum, p) => sum + Number(p.amount ?? 0), 0);
+
+  // What the player still owes, rather than what has already been collected.
+  // The summary used to label the settled figure "Total due", so an unpaid
+  // booking claimed a balance of zero and a paid one claimed the full price.
+  const netPaid = settledTotal - refundedTotal;
+  const isCancelled = booking?.status === "CANCELLED";
+  const stillDue = isCancelled
+    ? 0
+    : Math.max(0, Number(booking?.netAmount ?? 0) - netPaid);
 
   return (
     <>
@@ -183,7 +192,8 @@ export default function BookingDetailPage() {
           <div>
             <h1 style={{ fontSize: 24, marginBottom: 2 }}>Booking {code}</h1>
             <span className="subtle">
-              {createdAt ? `Booked ${createdAt}` : ""}
+              {[booking?.venueName, booking?.venueArea].filter(Boolean).join(" · ")}
+              {createdAt ? `${booking?.venueName ? " · " : ""}Booked ${createdAt}` : ""}
             </span>
           </div>
           <div className="row-wrap">
@@ -212,14 +222,17 @@ export default function BookingDetailPage() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => showToast("Directions opened 🗺️")}
+                  disabled={!canGetDirections(venueForActions)}
+                  onClick={() => openDirections(venueForActions)}
                 >
                   Directions
                 </Button>
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => showToast("Calling venue 📞")}
+                  disabled={!canCall(booking?.venueContactPhone)}
+                  title={canCall(booking?.venueContactPhone) ? undefined : 'This venue has not published a phone number'}
+                  onClick={() => callNumber(booking?.venueContactPhone)}
                 >
                   Contact venue
                 </Button>
@@ -265,12 +278,20 @@ export default function BookingDetailPage() {
                       {payments.map((row) => (
                         <tr key={row.id}>
                           <td>{formatDate((row.paidAt || row.createdAt || "").slice(0, 10))}</td>
-                          <td>{PAYMENT_TYPE_LABEL[row.type] ?? row.type}</td>
-                          <td>{row.method}</td>
+                          <td>
+                            {row.fromWallet
+                              ? row.type === "REFUND"
+                                ? "Refund to wallet"
+                                : "Wallet credit"
+                              : (PAYMENT_TYPE_LABEL[row.type] ?? row.type)}
+                          </td>
+                          <td>{row.fromWallet ? "Wallet" : row.method}</td>
                           <td className="num">{bdt(row.amount)}</td>
                           <td>
                             <span className={row.status === "SUCCESS" ? "badge green" : "badge"}>
-                              {row.status === "SUCCESS" ? "Paid" : row.status}
+                              {row.status === "SUCCESS"
+                                ? (row.type === "REFUND" ? "Refunded" : "Recorded")
+                                : row.status}
                             </span>
                           </td>
                         </tr>
@@ -289,22 +310,29 @@ export default function BookingDetailPage() {
                 <span>Slot</span>
                 <span className="num">{bdt(booking?.netAmount)}</span>
               </div>
+              {settledTotal > 0 ? (
+                <div className="pricerow">
+                  <span>Paid</span>
+                  <span className="num">{bdt(settledTotal)}</span>
+                </div>
+              ) : null}
               {refundPayment ? (
                 <div className="pricerow">
                   <span className="neg">Refunded</span>
-                  <span className="num neg">−{bdt(refundPayment.amount)}</span>
+                  <span className="num neg">−{bdt(refundedTotal)}</span>
                 </div>
               ) : null}
               <div className="pricerow total">
-                <span>{refundPayment ? "Net paid" : "Total paid"}</span>
-                <span className="num">
-                  {bdt(
-                    successfulPayment
-                      ? Number(successfulPayment.amount) - Number(refundPayment?.amount ?? 0)
-                      : booking?.netAmount,
-                  )}
-                </span>
+                <span>{stillDue > 0 ? "Still due" : isCancelled ? "Net charged" : "Settled"}</span>
+                <span className="num">{bdt(stillDue > 0 ? stillDue : netPaid)}</span>
               </div>
+              <p className="tiny subtle" style={{ margin: '8px 0 0' }}>
+                {stillDue > 0
+                  ? `${bdt(stillDue)} is payable to the venue on match day.`
+                  : isCancelled
+                    ? 'This booking is cancelled — nothing further is owed.'
+                    : 'Nothing left to pay for this booking.'}
+              </p>
             </div>
             <div className="card">
               <h4>Cancellation policy</h4>
@@ -321,9 +349,7 @@ export default function BookingDetailPage() {
                     size="sm"
                     variant="ghostDanger"
                     block
-                    onClick={onCancel}
-                    loading={cancelling}
-                    disabled={cancelling}
+                    to={paths.player.cancelFor(bookingId)}
                   >
                     Cancel booking
                   </Button>
@@ -332,9 +358,8 @@ export default function BookingDetailPage() {
                     size="sm"
                     variant="secondary"
                     block
-                    onClick={() =>
-                      showToast("Replacement request posted to Open Games 📣")
-                    }
+                    disabled
+                    title="Posting a replacement search isn't available yet — cancel the booking if you can't make it."
                   >
                     Find replacement player
                   </Button>

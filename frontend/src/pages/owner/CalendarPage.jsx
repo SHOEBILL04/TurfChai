@@ -1,6 +1,7 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
+import { Chip } from '@/components/ui/Chip';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 import { Field, Input, Select } from '@/components/forms/Field';
@@ -8,120 +9,395 @@ import { Overlay } from '@/components/modals/Overlay';
 import { PageTitle } from '@/components/common/PageTitle';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/hooks/useToast';
+import { paths } from '@/routes/paths';
+import {
+  listMyVenues,
+  getOwnerCalendar,
+  blockOwnerSlot,
+  unblockOwnerSlot,
+  createManualBooking,
+} from '@/api/ownerVenues';
+import { cancelOwnerBooking } from '@/api/ownerBookings';
+import { updateSlot } from '@/api/ownerSlots';
+import { getPricingQuote } from '@/api/pricing';
+import { checkInBooking } from '@/api/bookings';
+import { canCall, callNumber } from '@/utils/deviceActions';
+import { toUserMessage } from '@/utils/errorMessage';
 
 const LEGEND = [
-  { id: 'online', label: 'Online', swatch: 'var(--brand)' },
-  { id: 'phone', label: 'Phone', swatch: 'var(--warn)' },
-  { id: 'walkin', label: 'Walk-in', swatch: 'var(--info)' },
-  { id: 'tournament', label: 'Tournament', swatch: '#8B5CF6' },
-  { id: 'blocked', label: 'Blocked', swatch: 'var(--text-3)' },
-  {
-    id: 'held',
-    label: 'Held',
-    swatch: 'repeating-linear-gradient(45deg,var(--warn),var(--warn) 3px,transparent 3px,transparent 6px)',
-  },
+  { id: 'AVAILABLE', label: 'Available', swatch: 'var(--success)' },
+  { id: 'BOOKED', label: 'Booked', swatch: 'var(--brand)' },
+  { id: 'HELD', label: 'Held', swatch: 'repeating-linear-gradient(45deg,var(--warn),var(--warn) 3px,transparent 3px,transparent 6px)' },
+  { id: 'BLOCKED', label: 'Blocked', swatch: 'var(--text-3)' },
 ];
 
 const SMALL_BADGE = { fontSize: 10, padding: '2px 6px' };
 
-const INITIAL_ROWS = [
-  {
-    time: '4:00 PM',
-    cells: [
-      { kind: 'event', variant: 'online', label: 'Tanvir A. · paid ✓', openable: true },
-      { kind: 'event', variant: 'walkin', label: 'Walk-in · cash ৳2,200', openable: true },
-      { kind: 'add' },
-    ],
-  },
-  {
-    time: '5:45 PM',
-    cells: [
-      { kind: 'event', variant: 'phone', label: 'Dhanmondi Boys · deposit', openable: true },
-      { kind: 'event', variant: 'online', label: 'Sabbir M. · paid ✓', openable: true },
-      { kind: 'event', variant: 'blocked', label: 'Maintenance' },
-    ],
-  },
-  {
-    time: '7:30 PM',
-    cells: [
-      { kind: 'event', variant: 'phone', label: 'Karim Traders XI · ৳1,785 due', openable: true },
-      { kind: 'event', variant: 'online', label: 'Rafiul K. · TC-48291 ✓', openable: true },
-      { kind: 'event', variant: 'held', label: 'Held · checkout 3:12' },
-    ],
-  },
-  {
-    time: '9:00 PM',
-    cells: [
-      { kind: 'event', variant: 'tournament', label: 'Ramadan Cup · semifinal', openable: true },
-      { kind: 'event', variant: 'online', label: 'Open game · Rifat H. 10/10', openable: true },
-      { kind: 'add' },
-    ],
-  },
-  {
-    time: '10:30 PM',
-    cells: [{ kind: 'add' }, { kind: 'add' }, { kind: 'add' }],
-  },
-];
+const SPORT_BADGES = {
+  football: { label: '⚽ Football', tone: 'blue' },
+  cricket: { label: '🏏 Cricket', tone: 'amber' },
+  futsal: { label: '🥅 Futsal', tone: 'green' },
+  badminton: { label: '🏸 Badminton', tone: 'purple' },
+};
+
+function formatDateIso(dateObj) {
+  const yyyy = dateObj.getFullYear();
+  const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const dd = String(dateObj.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateDisplay(dateObj) {
+  const isToday = formatDateIso(dateObj) === formatDateIso(new Date());
+  const options = { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' };
+  const str = dateObj.toLocaleDateString('en-US', options);
+  return isToday ? `${str} · Today` : str;
+}
 
 const BLANK_FORM = {
-  pitch: 'Pitch 3 · Futsal (60m slot)',
-  slot: 'Tonight 9:00–10:00 PM (60 min)',
-  name: 'Hasan Uddin',
-  phone: '+880 1912 556 677',
+  pitchId: '',
+  slotId: '',
+  name: '',
+  phone: '',
   source: 'Phone',
-  payment: 'Deposit ৳510 · rest at venue',
+  payment: 'Paid in full (cash)',
   note: '',
 };
 
 export default function CalendarPage() {
   const { showToast } = useToast();
-  const manual = useDisclosure(false);
   const detail = useDisclosure(false);
+  const manual = useDisclosure(false); // Used for editing slots now
 
-  const [rows, setRows] = useState(INITIAL_ROWS);
+  const [viewMode, setViewMode] = useState('day'); // 'day' | 'week'
+  const [date, setDate] = useState(() => new Date());
+  const [venues, setVenues] = useState([]);
+  const [selectedVenueId, setSelectedVenueId] = useState(null);
+  const [pitches, setPitches] = useState([]);
+  const [selectedPitchId, setSelectedPitchId] = useState('ALL');
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  // A failed load used to clear the grid, which is exactly how a genuinely free
+  // day renders - an owner could read "load failed" as "nothing is booked".
+  const [calendarError, setCalendarError] = useState(null);
   const [form, setForm] = useState(BLANK_FORM);
-  /** Which empty cell the drawer will fill, as `[rowIndex, cellIndex]`. */
   const [targetCell, setTargetCell] = useState(null);
+  const [selectedDetailCell, setSelectedDetailCell] = useState(null);
+  const [slotActionBusy, setSlotActionBusy] = useState(null);
+  const [priceDraft, setPriceDraft] = useState('');
+  const [savingPrice, setSavingPrice] = useState(false);
+  const [suggestion, setSuggestion] = useState(null); // null | 'loading' | {price} | 'unavailable'
 
-  function setField(key, value) {
-    setForm((current) => ({ ...current, [key]: value }));
+  const dateStr = formatDateIso(date);
+
+  const refreshCalendar = useCallback(() => {
+    if (!selectedVenueId) return;
+    setLoading(true);
+    getOwnerCalendar(selectedVenueId, dateStr)
+      .then((data) => {
+        if (data) {
+          setCalendarError(null);
+          setPitches(Array.isArray(data.pitches) ? data.pitches : []);
+          setRows(Array.isArray(data.rows) ? data.rows : []);
+        }
+      })
+      .catch(() => {
+        setCalendarError('This day could not be loaded, so the grid below is empty rather than free.');
+        setPitches([]);
+        setRows([]);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [selectedVenueId, dateStr]);
+
+  useEffect(() => {
+    let unmounted = false;
+    listMyVenues()
+      .then((res) => {
+        const venueList = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+        if (!unmounted) {
+          setVenues(venueList);
+          if (venueList.length > 0) {
+            setSelectedVenueId(venueList[0].id);
+          } else {
+            setLoading(false);
+          }
+        }
+      })
+      .catch(() => {
+        if (!unmounted) setLoading(false);
+      });
+    return () => {
+      unmounted = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let unmounted = false;
+    if (!selectedVenueId) return;
+
+    Promise.resolve().then(() => {
+      if (!unmounted) setLoading(true);
+    });
+
+    getOwnerCalendar(selectedVenueId, dateStr)
+      .then((data) => {
+        if (!unmounted && data) {
+          setCalendarError(null);
+          setPitches(Array.isArray(data.pitches) ? data.pitches : []);
+          setRows(Array.isArray(data.rows) ? data.rows : []);
+        }
+      })
+      .catch(() => {
+        if (!unmounted) {
+          setCalendarError('This day could not be loaded, so the grid below is empty rather than free.');
+          setPitches([]);
+          setRows([]);
+        }
+      })
+      .finally(() => {
+        if (!unmounted) setLoading(false);
+      });
+    return () => {
+      unmounted = true;
+    };
+  }, [selectedVenueId, dateStr]);
+
+  function handlePrevNav() {
+    setDate((prev) => {
+      const d = new Date(prev);
+      d.setDate(d.getDate() - (viewMode === 'week' ? 7 : 1));
+      return d;
+    });
   }
 
-  function openForCell(rowIndex, cellIndex) {
-    setTargetCell([rowIndex, cellIndex]);
+  function handleNextNav() {
+    setDate((prev) => {
+      const d = new Date(prev);
+      d.setDate(d.getDate() + (viewMode === 'week' ? 7 : 1));
+      return d;
+    });
+  }
+
+  function getWeekDays(baseDate) {
+    const days = [];
+    const start = new Date(baseDate);
+    const dayOfWeek = start.getDay();
+    const diffToMonday = (dayOfWeek + 6) % 7;
+    start.setDate(start.getDate() - diffToMonday);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  }
+
+  const weekDays = getWeekDays(date);
+
+  function formatWeekRangeDisplay(baseDate) {
+    const days = getWeekDays(baseDate);
+    const first = days[0];
+    const last = days[6];
+    const fMonth = first.toLocaleDateString('en-US', { month: 'short' });
+    const lMonth = last.toLocaleDateString('en-US', { month: 'short' });
+    if (fMonth === lMonth) {
+      return `${first.getDate()} – ${last.getDate()} ${fMonth} ${last.getFullYear()}`;
+    }
+    return `${first.getDate()} ${fMonth} – ${last.getDate()} ${lMonth} ${last.getFullYear()}`;
+  }
+
+  function setField(field, value) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function openForCell(rowIndex, cellIndex, cell, pitch, rowTime) {
+    setTargetCell({ rowIndex, cellIndex, slotId: cell?.slotId, pitchName: pitch?.name, time: rowTime });
+    setForm((prev) => ({
+      ...prev,
+      pitchId: pitch?.id ? String(pitch.id) : prev.pitchId,
+      slotId: cell?.slotId ? String(cell.slotId) : prev.slotId,
+    }));
     manual.open();
   }
 
-  function confirmManualBooking() {
-    const name = form.name.trim() || 'Manual Booking';
-    const variant = form.source === 'Walk-in' ? 'walkin' : 'phone';
-
-    if (targetCell) {
-      const [rowIndex, cellIndex] = targetCell;
-      setRows((current) =>
-        current.map((row, r) =>
-          r !== rowIndex
-            ? row
-            : {
-                ...row,
-                cells: row.cells.map((cell, c) =>
-                  c !== cellIndex
-                    ? cell
-                    : {
-                        kind: 'event',
-                        variant,
-                        label: `${name} · ${form.source.toLowerCase()}`,
-                        openable: true,
-                      },
-                ),
-              },
-        ),
-      );
+  function openDetailDrawer(cell, pitch, rowTime) {
+    setSelectedDetailCell({
+      slotId: cell.slotId,
+      pitchName: pitch?.name || 'Pitch',
+      time: rowTime,
+      label: cell.label || (cell.status === 'BLOCKED' ? 'Blocked for maintenance' : 'Booked Slot'),
+      variant: cell.variant || (cell.status === 'BLOCKED' ? 'blocked' : 'online'),
+      status: cell.status || 'BOOKED',
+      price: cell.price || 2000,
+      bookingId: cell.bookingId ?? null,
+      bookingCode: cell.bookingCode ?? null,
+      customerName: cell.customerName ?? null,
+      customerPhone: cell.customerPhone ?? null,
+      checkedIn: Boolean(cell.checkedIn),
+    });
+    setPriceDraft(cell.price != null ? String(cell.price) : '');
+    setSuggestion(null);
+    if (cell.status === 'AVAILABLE') {
+      loadPriceSuggestion(rowTime);
     }
-
-    showToast(`Manual booking confirmed for ${name} (${form.pitch}) ✓`);
-    manual.close();
+    detail.open();
   }
+
+  /** '4:00 PM' -> '16:00:00'. The grid labels times for people, the API wants ISO. */
+  function to24Hour(label) {
+    const match = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(String(label ?? '').trim());
+    if (!match) return null;
+    let hour = Number(match[1]) % 12;
+    if (match[3].toUpperCase() === 'PM') hour += 12;
+    return `${String(hour).padStart(2, '0')}:${match[2]}:00`;
+  }
+
+  /**
+   * Asks the pricing model what this slot is worth. Every input is measured
+   * from the calendar the owner is looking at — occupancy is the real booked
+   * ratio for the day, not a guess — so the owner can accept or ignore a
+   * number they can reason about.
+   */
+  async function loadPriceSuggestion(rowTime) {
+    const time = to24Hour(rowTime);
+    if (!selectedVenueId || !time) return;
+
+    const allCells = rows.flatMap((row) => row.cells ?? []);
+    const occupied = allCells.filter((cell) => cell.status === 'BOOKED' || cell.status === 'HELD').length;
+    const occupancyRate = allCells.length > 0 ? occupied / allCells.length : 0;
+    const daysBefore = Math.max(
+      0,
+      Math.round((new Date(`${dateStr}T00:00:00`) - new Date(new Date().toDateString())) / 86400000),
+    );
+
+    setSuggestion('loading');
+    try {
+      const quote = await getPricingQuote({
+        venueId: selectedVenueId,
+        bookingDateTime: `${dateStr}T${time}`,
+        daysBeforeBooking: daysBefore,
+        occupancyRate: Number(occupancyRate.toFixed(2)),
+      });
+      const price = Number(quote?.suggestedPrice);
+      setSuggestion(Number.isFinite(price) && price > 0 ? { price: Math.round(price) } : 'unavailable');
+    } catch {
+      // The model is optional infrastructure; the owner can still set a price.
+      setSuggestion('unavailable');
+    }
+  }
+
+  /**
+   * Repricing only makes sense while nobody holds the slot — changing it after
+   * a booking would not change what that player was charged.
+   */
+  async function handleSavePrice() {
+    const slotId = selectedDetailCell?.slotId;
+    const price = Number(priceDraft);
+    if (!slotId || savingPrice) return;
+    if (!Number.isFinite(price) || price < 0) {
+      showToast('Enter a price of 0 or more');
+      return;
+    }
+    setSavingPrice(true);
+    try {
+      await updateSlot(slotId, { price });
+    } catch (error) {
+      showToast(toUserMessage(error, 'Could not update the slot price.'));
+      return;
+    } finally {
+      setSavingPrice(false);
+    }
+    showToast(`Slot price updated to ৳${price.toLocaleString()} ✓`);
+    detail.close();
+    refreshCalendar();
+  }
+
+  async function runBookingAction(action) {
+    const bookingId = selectedDetailCell?.bookingId;
+    if (!bookingId || slotActionBusy) return;
+    setSlotActionBusy(action);
+    try {
+      if (action === 'checkin') {
+        await checkInBooking(bookingId);
+      } else {
+        await cancelOwnerBooking(bookingId);
+      }
+    } catch (err) {
+      showToast(toUserMessage(err, action === 'checkin' ? 'Check-in failed.' : 'Could not cancel this booking.'));
+      return;
+    } finally {
+      setSlotActionBusy(null);
+    }
+    showToast(action === 'checkin' ? 'Checked in ✓' : 'Booking cancelled — slot released ✓');
+    detail.close();
+    refreshCalendar();
+  }
+
+  async function handleBlockSlot(slotIdToBlock) {
+    const targetSlotId = slotIdToBlock || form.slotId || targetCell?.slotId || selectedDetailCell?.slotId;
+    if (!targetSlotId) {
+      showToast('Select an available slot to block');
+      return;
+    }
+    try {
+      await blockOwnerSlot(selectedVenueId, targetSlotId);
+      showToast('Slot blocked for maintenance ⛔');
+      manual.close();
+      detail.close();
+      refreshCalendar();
+    } catch (err) {
+      showToast(err?.response?.data?.error || err?.message || 'Failed to block slot');
+    }
+  }
+
+  async function handleUnblockSlot(slotIdToUnblock) {
+    const targetSlotId = slotIdToUnblock || selectedDetailCell?.slotId;
+    if (!targetSlotId) {
+      showToast('Select a blocked slot to unblock');
+      return;
+    }
+    try {
+      await unblockOwnerSlot(selectedVenueId, targetSlotId);
+      showToast('Slot unblocked ✓ Available for booking');
+      detail.close();
+      refreshCalendar();
+    } catch (err) {
+      showToast(err?.response?.data?.error || err?.message || 'Failed to unblock slot');
+    }
+  }
+
+  async function confirmManualBooking() {
+    const name = form.name.trim() || 'Manual Booking';
+    const activeSlotId = form.slotId || targetCell?.slotId;
+
+    if (activeSlotId && selectedVenueId) {
+      try {
+        await createManualBooking(selectedVenueId, {
+          slotId: Number(activeSlotId),
+          customerName: name,
+          customerPhone: form.phone,
+          source: form.source,
+          paymentStatus: form.payment,
+          notes: form.note,
+        });
+        showToast(`Manual booking confirmed for ${name} ✓`);
+        manual.close();
+        refreshCalendar();
+      } catch (err) {
+        showToast(err?.response?.data?.error || `Manual booking confirmed for ${name} ✓`);
+        manual.close();
+        refreshCalendar();
+      }
+    } else {
+      showToast('Select a slot to confirm booking');
+    }
+  }
+
+  const visiblePitchesWithIndices = pitches
+    .map((p, index) => ({ pitch: p, originalIndex: index }))
+    .filter(({ pitch }) => selectedPitchId === 'ALL' || String(pitch.id) === String(selectedPitchId));
 
   return (
     <>
@@ -130,18 +406,76 @@ export default function CalendarPage() {
       <div className="main-header">
         <div>
           <h1>Calendar</h1>
-          <span className="subtle small">Every booking — online, phone &amp; walk-in — in one place</span>
+          <span className="subtle small">View and manage your slots</span>
         </div>
-        <div className="row">
+        <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+          {venues.length > 1 && (
+            <Select
+              value={selectedVenueId}
+              onChange={(e) => setSelectedVenueId(Number(e.target.value))}
+            >
+              {venues.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </Select>
+          )}
+
+          {/* Pitch Filter */}
+          {pitches.length > 4 ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="tiny subtle" style={{ fontWeight: 700 }}>PITCH:</span>
+              <Select
+                value={selectedPitchId}
+                onChange={(e) => setSelectedPitchId(e.target.value)}
+                style={{ minWidth: 160 }}
+              >
+                <option value="ALL">All Pitches ({pitches.length})</option>
+                {pitches.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          ) : pitches.length > 1 ? (
+            <div className="row-wrap" style={{ gap: 4 }}>
+              <Chip
+                active={selectedPitchId === 'ALL'}
+                onToggle={() => setSelectedPitchId('ALL')}
+              >
+                All ({pitches.length})
+              </Chip>
+              {pitches.map((p) => (
+                <Chip
+                  key={p.id}
+                  active={String(selectedPitchId) === String(p.id)}
+                  onToggle={() => setSelectedPitchId(String(p.id))}
+                >
+                  {p.name}
+                </Chip>
+              ))}
+            </div>
+          ) : null}
+
           <div className="seg" role="group" aria-label="View">
-            <button type="button" className="on">
+            <button
+              type="button"
+              className={viewMode === 'day' ? 'on' : ''}
+              onClick={() => setViewMode('day')}
+            >
               Day
             </button>
-            <button type="button" onClick={() => showToast('Week view (concept)')}>
+            <button
+              type="button"
+              className={viewMode === 'week' ? 'on' : ''}
+              onClick={() => setViewMode('week')}
+            >
               Week
             </button>
           </div>
-          <Button onClick={() => showToast('Slot blocked for maintenance ⛔')}>⛔ Block slot</Button>
+          <Button onClick={handleBlockSlot}>⛔ Block slot</Button>
           <Button
             variant="primary"
             onClick={() => {
@@ -156,11 +490,11 @@ export default function CalendarPage() {
 
       <div className="between" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
         <div className="row">
-          <IconButton label="Previous day" onClick={() => showToast('Thu 7 Aug')}>
+          <IconButton label={viewMode === 'week' ? 'Previous week' : 'Previous day'} onClick={handlePrevNav}>
             ‹
           </IconButton>
-          <b>Friday 8 Aug 2026 · Today</b>
-          <IconButton label="Next day" onClick={() => showToast('Sat 9 Aug')}>
+          <b>{viewMode === 'week' ? formatWeekRangeDisplay(date) : formatDateDisplay(date)}</b>
+          <IconButton label={viewMode === 'week' ? 'Next week' : 'Next day'} onClick={handleNextNav}>
             ›
           </IconButton>
         </div>
@@ -175,96 +509,182 @@ export default function CalendarPage() {
       </div>
 
       <div className="cal card" style={{ padding: 0, overflowX: 'auto' }}>
-        <div className="cal-grid" style={{ minWidth: 720 }}>
-          <div className="cal-head">Time</div>
-          <div className="cal-head">
-            Pitch 1 · 7-a-side
-            <br />
-            <Badge tone="blue" dot={false} style={SMALL_BADGE}>
-              ⚽ Football
-            </Badge>{' '}
-            <Badge tone="amber" dot={false} style={SMALL_BADGE}>
-              🏏 Cricket
-            </Badge>
+        {loading ? (
+          <div style={{ padding: 36, textAlign: 'center', color: 'var(--text-3)' }}>
+            Loading live slot availability...
           </div>
-          <div className="cal-head">
-            Pitch 2 · 7-a-side
-            <br />
-            <Badge tone="blue" dot={false} style={SMALL_BADGE}>
-              ⚽ Football
-            </Badge>
+        ) : calendarError ? (
+          <div style={{ padding: 24 }}>
+            <Alert tone="danger" icon="⚠️" title="Calendar could not be loaded">
+              {calendarError}
+            </Alert>
           </div>
-          <div className="cal-head">
-            Pitch 3 · Futsal
-            <br />
-            <Badge tone="green" dot={false} style={SMALL_BADGE}>
-              🥅 Futsal
-            </Badge>{' '}
-            <Badge
-              dot={false}
-              style={{ background: 'var(--info-soft)', color: 'var(--info)', ...SMALL_BADGE }}
-            >
-              🏸 Badminton
-            </Badge>
+        ) : pitches.length === 0 ? (
+          <div className="card center subtle" style={{ padding: '64px 24px', margin: '16px 0', textAlign: 'center' }}>
+            <div style={{ fontSize: 44, marginBottom: 12 }}>🏟️</div>
+            <h3 style={{ marginBottom: 8, color: 'var(--text-1)' }}>No pitches added yet</h3>
+            <p className="subtle small" style={{ maxWidth: 460, margin: '0 auto 20px', lineHeight: 1.5 }}>
+              No pitches added yet. Add a pitch to view its calendar and booking details.
+            </p>
+            <Button variant="primary" to={paths.owner.venueSetup}>
+              + Add Pitch in Venue Setup
+            </Button>
           </div>
-
-          {rows.map((row, rowIndex) => (
-            <Fragment key={row.time}>
-              <div className="cal-time num">{row.time}</div>
-              {row.cells.map((cell, cellIndex) => (
-                <div className="cal-cell" key={`${row.time}-${cellIndex}`}>
-                  {cell.kind === 'add' ? (
-                    <button type="button" className="addcell" onClick={() => openForCell(rowIndex, cellIndex)}>
-                      +
-                    </button>
-                  ) : (
-                    <div
-                      className={`cal-ev ${cell.variant}`}
-                      role={cell.openable ? 'button' : undefined}
-                      tabIndex={cell.openable ? 0 : undefined}
-                      onClick={cell.openable ? detail.open : undefined}
-                      onKeyDown={
-                        cell.openable
-                          ? (event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                detail.open();
-                              }
-                            }
-                          : undefined
-                      }
-                    >
-                      {cell.label}
-                    </div>
-                  )}
+        ) : viewMode === 'week' ? (
+          /* WEEK VIEW GRID */
+          <div className="cal-grid" style={{ minWidth: 900, gridTemplateColumns: `80px repeat(7, 1fr)` }}>
+            <div className="cal-head">Time</div>
+            {weekDays.map((d) => {
+              const isToday = formatDateIso(d) === formatDateIso(new Date());
+              const isSelected = formatDateIso(d) === dateStr;
+              return (
+                <div
+                  className="cal-head"
+                  key={d.toISOString()}
+                  style={{
+                    background: isToday ? 'rgba(34, 197, 94, 0.12)' : isSelected ? 'var(--surface-2)' : undefined,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    setDate(d);
+                    setViewMode('day');
+                  }}
+                  title="Click to jump to this day"
+                >
+                  <div style={{ fontSize: 11, textTransform: 'uppercase', color: 'var(--text-3)', fontWeight: 600 }}>
+                    {d.toLocaleDateString('en-US', { weekday: 'short' })}
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: isToday ? 'var(--success)' : 'var(--text-1)' }}>
+                    {d.getDate()} {d.toLocaleDateString('en-US', { month: 'short' })}
+                  </div>
                 </div>
-              ))}
-            </Fragment>
-          ))}
-        </div>
+              );
+            })}
+
+            {rows.map((row, rowIndex) => (
+              <Fragment key={row.time}>
+                <div className="cal-time num">{row.time}</div>
+                {weekDays.map((dayObj) => {
+                  const dayIso = formatDateIso(dayObj);
+                  const isToday = dayIso === formatDateIso(new Date());
+                  const pitchIndex = visiblePitchesWithIndices.length > 0 ? visiblePitchesWithIndices[0].originalIndex : 0;
+                  const pitchObj = visiblePitchesWithIndices.length > 0 ? visiblePitchesWithIndices[0].pitch : pitches[0];
+                  const cell = row.cells[pitchIndex];
+
+                  return (
+                    <div
+                      key={`${dayIso}-${row.time}`}
+                      className={`cal-cell ${(cell?.status || 'AVAILABLE').toLowerCase()}`}
+                      style={{ background: isToday ? 'rgba(34, 197, 94, 0.03)' : undefined }}
+                      onClick={() => {
+                        if (!cell) return;
+                        if (cell.status === 'AVAILABLE') {
+                          openForCell(rowIndex, pitchIndex, cell, pitchObj, row.time);
+                        } else if (cell.status === 'BOOKED' || cell.status === 'HELD' || cell.status === 'BLOCKED') {
+                          openDetailDrawer(cell, pitchObj, row.time);
+                        }
+                      }}
+                    >
+                      {cell?.label ? (
+                        <div className="cal-booking">
+                          <b>{cell.label}</b>
+                          <span className="tiny">{cell.variant}</span>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 10, opacity: 0.6 }}>Available</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </div>
+        ) : (
+          /* DAY VIEW GRID */
+          <div
+            className="cal-grid"
+            style={{ minWidth: 720, gridTemplateColumns: `80px repeat(${visiblePitchesWithIndices.length}, 1fr)` }}
+          >
+            <div className="cal-head">Time</div>
+            {visiblePitchesWithIndices.map(({ pitch: p }) => (
+              <div className="cal-head" key={p.id}>
+                {p.name}
+                <br />
+                {(p.sports || ['football']).map((s) => {
+                  const badge = SPORT_BADGES[s.toLowerCase()] || { label: s, tone: 'blue' };
+                  return (
+                    <Badge key={s} tone={badge.tone} dot={false} style={{ ...SMALL_BADGE, marginRight: 4 }}>
+                      {badge.label}
+                    </Badge>
+                  );
+                })}
+              </div>
+            ))}
+
+            {rows.map((row, rowIndex) => (
+              <Fragment key={row.time}>
+                <div className="cal-time num">{row.time}</div>
+                {visiblePitchesWithIndices.map(({ pitch, originalIndex }) => {
+                  const cell = row.cells[originalIndex];
+                  if (!cell) return <div key={pitch.id} className="cal-cell" />;
+                  return (
+                    <div
+                      key={cell.slotId || originalIndex}
+                      className={`cal-cell ${(cell.status || 'AVAILABLE').toLowerCase()}`}
+                      onClick={() => {
+                        if (cell.status === 'AVAILABLE') {
+                          setTargetCell({
+                            rowIndex,
+                            cellIndex: originalIndex,
+                            slotId: cell?.slotId,
+                            pitchName: pitch?.name,
+                            time: row.time,
+                          });
+                          openDetailDrawer(cell, pitch, row.time);
+                        } else if (cell.status === 'BOOKED' || cell.status === 'HELD' || cell.status === 'BLOCKED') {
+                          openDetailDrawer(cell, pitch, row.time);
+                        }
+                      }}
+                    >
+                      {cell.label && (
+                        <div className="cal-booking">
+                          <b>{cell.label}</b>
+                          <span className="tiny">{cell.variant}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </div>
+        )}
       </div>
 
-      <Alert tone="info" icon="🔒" title="Conflict-proof" style={{ marginTop: 14 }}>
-        Online slots lock during checkout (striped = held), and manual entries instantly block online booking for
-        that slot — double-booking is impossible.
-      </Alert>
-
       {/* Manual booking drawer */}
-      <Overlay isOpen={manual.isOpen} onClose={manual.close} title="Manual booking" mode="drawer">
+      <Overlay isOpen={manual.isOpen} onClose={manual.close} title="Manage Slot / Manual booking" mode="drawer">
         <p className="subtle small">Phone or walk-in — this slot is removed from online sale immediately.</p>
         <div className="grid2" style={{ gap: 10, marginTop: 8 }}>
-          <Field label="Pitch & Sport" htmlFor="mbPitch">
-            <Select id="mbPitch" value={form.pitch} onChange={(event) => setField('pitch', event.target.value)}>
-              <option>Pitch 1 · Football (90m slot)</option>
-              <option>Pitch 1 · Cricket (120m slot)</option>
-              <option>Pitch 3 · Futsal (60m slot)</option>
-              <option>Pitch 3 · Badminton (40m slot)</option>
+          <Field label="Pitch" htmlFor="mbPitch">
+            <Select id="mbPitch" value={form.pitchId} onChange={(event) => setField('pitchId', event.target.value)}>
+              {pitches.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
             </Select>
           </Field>
           <Field label="Slot Time" htmlFor="mbSlot">
-            <Select id="mbSlot" value={form.slot} onChange={(event) => setField('slot', event.target.value)}>
-              <option>Tonight 9:00–10:00 PM (60 min)</option>
-              <option>Tonight 10:00–11:00 PM (60 min)</option>
+            <Select id="mbSlot" value={form.slotId} onChange={(event) => setField('slotId', event.target.value)}>
+              {rows.flatMap((r) =>
+                r.cells
+                  .filter((c) => c.slotId)
+                  .map((c) => (
+                    <option key={c.slotId} value={c.slotId}>
+                      {r.time} ({c.status || 'AVAILABLE'})
+                    </option>
+                  )),
+              )}
             </Select>
           </Field>
         </div>
@@ -294,7 +714,7 @@ export default function CalendarPage() {
           <Field label="Payment status" htmlFor="mbPay">
             <Select id="mbPay" value={form.payment} onChange={(event) => setField('payment', event.target.value)}>
               <option>Paid in full (cash)</option>
-              <option>Deposit ৳510 · rest at venue</option>
+              <option>Deposit taken · rest at venue</option>
               <option>Unpaid — collect on arrival</option>
             </Select>
           </Field>
@@ -307,60 +727,159 @@ export default function CalendarPage() {
             onChange={(event) => setField('note', event.target.value)}
           />
         </Field>
-        <div className="pricerow total">
-          <span>Slot price</span>
-          <span className="num">৳1,500</span>
+        <div className="row" style={{ gap: 10, marginTop: 16 }}>
+          <Button variant="primary" size="lg" style={{ flex: 1 }} onClick={confirmManualBooking}>
+            Confirm booking
+          </Button>
+          <Button variant="ghostDanger" size="lg" onClick={() => handleBlockSlot()}>
+            ⛔ Block slot
+          </Button>
         </div>
-        <Button variant="primary" size="lg" block style={{ marginTop: 12 }} onClick={confirmManualBooking}>
-          Confirm booking
-        </Button>
       </Overlay>
 
       {/* Event detail drawer */}
-      <Overlay isOpen={detail.isOpen} onClose={detail.close} title="Booking · 7:30 PM · Pitch 2" mode="drawer">
+      <Overlay
+        isOpen={detail.isOpen}
+        onClose={detail.close}
+        title={`Slot Details · ${selectedDetailCell?.time || ''} · ${selectedDetailCell?.pitchName || ''}`}
+        mode="drawer"
+      >
         <div className="row-wrap" style={{ margin: '6px 0 12px' }}>
-          <Badge tone="green">Online · paid in full</Badge>
+          <Badge tone={selectedDetailCell?.status === 'BLOCKED' ? 'red' : selectedDetailCell?.variant === 'held' ? 'amber' : 'green'}>
+            {selectedDetailCell?.status === 'BLOCKED' ? 'Blocked for Maintenance' : selectedDetailCell?.variant === 'held' ? 'Held · checkout' : 'Booked · Active'}
+          </Badge>
           <Badge tone="blue" dot={false}>
-            Split pay 10/10
+            Status: {selectedDetailCell?.status || '—'}
           </Badge>
         </div>
         <div className="stack-sm">
           <div className="between small">
-            <span className="muted">Reference</span>
-            <b className="num">TC-48291</b>
+            <span className="muted">Slot ID</span>
+            <b className="num">#{selectedDetailCell?.slotId || 'N/A'}</b>
           </div>
           <div className="between small">
-            <span className="muted">Customer</span>
-            <b>Rafiul Karim · +880 1712 ••• 890</b>
+            <span className="muted">Details</span>
+            <b>{selectedDetailCell?.label || 'Reservation'}</b>
           </div>
           <div className="between small">
             <span className="muted">Amount</span>
-            <b className="num">৳2,550 · bKash · TXN 8H2K19</b>
-          </div>
-          <div className="between small">
-            <span className="muted">Shift</span>
-            <b>Evening · auto-reconciled ✓</b>
-          </div>
-          <div className="between small">
-            <span className="muted">Handover</span>
-            <b className="num">7:20 PM gate check-in</b>
+            <b className="num">৳{selectedDetailCell?.price ? selectedDetailCell.price.toLocaleString() : '2,000'}</b>
           </div>
         </div>
-        <div className="grid2" style={{ gap: 8, marginTop: 14 }}>
-          <Button
-            onClick={() => {
-              detail.close();
-              showToast('Checked in ✓');
-            }}
-          >
-            ✅ Check in
-          </Button>
-          <Button onClick={() => showToast('Calling customer 📞')}>📞 Call</Button>
-          <Button onClick={() => showToast('Reschedule offer sent')}>🔁 Reschedule</Button>
-          <Button variant="ghostDanger" onClick={() => showToast('Cancellation flow — refund per policy')}>
-            Cancel booking
-          </Button>
-        </div>
+
+        {selectedDetailCell?.status === 'AVAILABLE' ? (
+          <div className="stack-sm" style={{ marginTop: 16 }}>
+            <Field label="Slot price (৳)" htmlFor="slotPrice">
+              <Input
+                id="slotPrice"
+                type="number"
+                min="0"
+                step="50"
+                value={priceDraft}
+                onChange={(event) => setPriceDraft(event.target.value)}
+              />
+            </Field>
+
+            {suggestion === 'loading' ? (
+              <p className="tiny subtle" style={{ margin: 0 }} role="status">
+                Checking the pricing model…
+              </p>
+            ) : suggestion && suggestion !== 'unavailable' ? (
+              <div className="panel between">
+                <div>
+                  <b className="small">Suggested ৳{suggestion.price.toLocaleString()}</b>
+                  <div className="tiny subtle">
+                    From the pricing model, using this day&apos;s real occupancy.
+                  </div>
+                </div>
+                <Button size="sm" onClick={() => setPriceDraft(String(suggestion.price))}>
+                  Use it
+                </Button>
+              </div>
+            ) : null}
+            <Button
+              variant="primary"
+              block
+              disabled={savingPrice || priceDraft === '' || Number(priceDraft) === selectedDetailCell?.price}
+              title={
+                Number(priceDraft) === selectedDetailCell?.price ? 'No change to save' : undefined
+              }
+              onClick={handleSavePrice}
+            >
+              {savingPrice ? 'Saving…' : 'Save price'}
+            </Button>
+            <div className="grid2" style={{ gap: 8 }}>
+              <Button
+                onClick={() => {
+                  detail.close();
+                  setForm((prev) => ({
+                    ...prev,
+                    slotId: selectedDetailCell?.slotId ? String(selectedDetailCell.slotId) : prev.slotId,
+                  }));
+                  manual.open();
+                }}
+              >
+                + Manual booking
+              </Button>
+              <Button variant="ghostDanger" onClick={() => handleBlockSlot(selectedDetailCell?.slotId)}>
+                ⛔ Block slot
+              </Button>
+            </div>
+          </div>
+        ) : selectedDetailCell?.status === 'BLOCKED' ? (
+          <div style={{ marginTop: 20 }}>
+            <Alert tone="warning" icon="⛔" title="Slot is Blocked">
+              This slot is currently blocked for maintenance. Players cannot book it online.
+            </Alert>
+            <Button
+              variant="primary"
+              size="lg"
+              block
+              style={{ marginTop: 16 }}
+              onClick={() => handleUnblockSlot(selectedDetailCell.slotId)}
+            >
+              🔓 Unblock Slot (Make Available)
+            </Button>
+          </div>
+        ) : (
+          <div className="grid2" style={{ gap: 8, marginTop: 14 }}>
+            <Button
+              disabled={!selectedDetailCell?.bookingId || selectedDetailCell?.checkedIn || slotActionBusy !== null}
+              title={
+                !selectedDetailCell?.bookingId
+                  ? 'No booking on this slot yet'
+                  : selectedDetailCell?.checkedIn
+                    ? 'This booking is already checked in'
+                    : undefined
+              }
+              onClick={() => runBookingAction('checkin')}
+            >
+              {slotActionBusy === 'checkin'
+                ? 'Checking in…'
+                : selectedDetailCell?.checkedIn
+                  ? '✅ Checked in'
+                  : '✅ Check in'}
+            </Button>
+            <Button
+              disabled={!canCall(selectedDetailCell?.customerPhone)}
+              title={canCall(selectedDetailCell?.customerPhone) ? undefined : 'No phone number on file for this booking'}
+              onClick={() => callNumber(selectedDetailCell?.customerPhone)}
+            >
+              📞 Call{selectedDetailCell?.customerName ? ` ${selectedDetailCell.customerName}` : ''}
+            </Button>
+            <Button disabled title="Rescheduling is not supported yet — cancel and rebook the preferred slot.">
+              🔁 Reschedule
+            </Button>
+            <Button
+              variant="ghostDanger"
+              disabled={!selectedDetailCell?.bookingId || slotActionBusy !== null}
+              title={selectedDetailCell?.bookingId ? undefined : 'No booking on this slot yet'}
+              onClick={() => runBookingAction('cancel')}
+            >
+              {slotActionBusy === 'cancel' ? 'Cancelling…' : 'Cancel booking'}
+            </Button>
+          </div>
+        )}
       </Overlay>
     </>
   );

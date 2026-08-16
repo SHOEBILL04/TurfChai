@@ -10,6 +10,19 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+### Node ###
+node_modules/
+dist/
+coverage/
+
+### OS / editor scratch ###
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*.orig
+*~
+
 ### Secrets ###
 .env
 
@@ -46,3 +59,10 @@ Mugdho/
 
 ### Runtime logs ###
 boot.log
+
+### QA run artefacts (regenerated on every gate run) ###
+qa/*.log
+qa/.*.log
+frontend/e2e/.artifacts/
+frontend/e2e/.state/
+frontend/qa/*.log

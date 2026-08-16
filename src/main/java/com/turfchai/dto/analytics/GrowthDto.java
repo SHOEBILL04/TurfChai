@@ -1,5 +1,6 @@
 package com.turfchai.dto.analytics;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -28,7 +29,7 @@ public class GrowthDto {
      * Derived from bookings: users who booked in both the prior period
      * and the current period.
      */
-    private double retentionRate;
+    private Double retentionRate;
 
     /** Day-of-week labels for the signup chart (e.g. "Mon", "Tue", …). */
     private List<String> signupLabels;
@@ -45,13 +46,17 @@ public class GrowthDto {
     /** Monthly new host counts for the 6-month growth chart. */
     private List<Long> growthHosts;
 
+    /** Acquisition-channel breakdown (new users, conversion, CAC). */
+    private List<AcquisitionChannelDto> channels = new ArrayList<>();
+
     // ── Constructors ──────────────────────────────────────────────────────
 
-    public GrowthDto() {}
+    public GrowthDto() {
+    }
 
     public GrowthDto(long totalUsers, long newUsersToday,
-                     double activeRatio, double retentionRate,
-                     List<String> signupLabels, List<Long> signupCounts) {
+            double activeRatio, Double retentionRate,
+            List<String> signupLabels, List<Long> signupCounts) {
         this.totalUsers = totalUsers;
         this.newUsersToday = newUsersToday;
         this.activeRatio = activeRatio;
@@ -62,30 +67,83 @@ public class GrowthDto {
 
     // ── Getters & setters ─────────────────────────────────────────────────
 
-    public long getTotalUsers() { return totalUsers; }
-    public void setTotalUsers(long totalUsers) { this.totalUsers = totalUsers; }
+    public long getTotalUsers() {
+        return totalUsers;
+    }
 
-    public long getNewUsersToday() { return newUsersToday; }
-    public void setNewUsersToday(long newUsersToday) { this.newUsersToday = newUsersToday; }
+    public void setTotalUsers(long totalUsers) {
+        this.totalUsers = totalUsers;
+    }
 
-    public double getActiveRatio() { return activeRatio; }
-    public void setActiveRatio(double activeRatio) { this.activeRatio = activeRatio; }
+    public long getNewUsersToday() {
+        return newUsersToday;
+    }
 
-    public double getRetentionRate() { return retentionRate; }
-    public void setRetentionRate(double retentionRate) { this.retentionRate = retentionRate; }
+    public void setNewUsersToday(long newUsersToday) {
+        this.newUsersToday = newUsersToday;
+    }
 
-    public List<String> getSignupLabels() { return signupLabels; }
-    public void setSignupLabels(List<String> signupLabels) { this.signupLabels = signupLabels; }
+    public double getActiveRatio() {
+        return activeRatio;
+    }
 
-    public List<Long> getSignupCounts() { return signupCounts; }
-    public void setSignupCounts(List<Long> signupCounts) { this.signupCounts = signupCounts; }
+    public void setActiveRatio(double activeRatio) {
+        this.activeRatio = activeRatio;
+    }
 
-    public List<String> getGrowthMonths() { return growthMonths; }
-    public void setGrowthMonths(List<String> growthMonths) { this.growthMonths = growthMonths; }
+    public Double getRetentionRate() {
+        return retentionRate;
+    }
 
-    public List<Long> getGrowthPlayers() { return growthPlayers; }
-    public void setGrowthPlayers(List<Long> growthPlayers) { this.growthPlayers = growthPlayers; }
+    public void setRetentionRate(Double retentionRate) {
+        this.retentionRate = retentionRate;
+    }
 
-    public List<Long> getGrowthHosts() { return growthHosts; }
-    public void setGrowthHosts(List<Long> growthHosts) { this.growthHosts = growthHosts; }
+    public List<String> getSignupLabels() {
+        return signupLabels;
+    }
+
+    public void setSignupLabels(List<String> signupLabels) {
+        this.signupLabels = signupLabels;
+    }
+
+    public List<Long> getSignupCounts() {
+        return signupCounts;
+    }
+
+    public void setSignupCounts(List<Long> signupCounts) {
+        this.signupCounts = signupCounts;
+    }
+
+    public List<String> getGrowthMonths() {
+        return growthMonths;
+    }
+
+    public void setGrowthMonths(List<String> growthMonths) {
+        this.growthMonths = growthMonths;
+    }
+
+    public List<Long> getGrowthPlayers() {
+        return growthPlayers;
+    }
+
+    public void setGrowthPlayers(List<Long> growthPlayers) {
+        this.growthPlayers = growthPlayers;
+    }
+
+    public List<Long> getGrowthHosts() {
+        return growthHosts;
+    }
+
+    public void setGrowthHosts(List<Long> growthHosts) {
+        this.growthHosts = growthHosts;
+    }
+
+    public List<AcquisitionChannelDto> getChannels() {
+        return channels;
+    }
+
+    public void setChannels(List<AcquisitionChannelDto> channels) {
+        this.channels = channels;
+    }
 }
