@@ -45,6 +45,14 @@ public class VenueSearchService {
                     .sorted(Comparator.comparing((VenueSummaryDto v) -> v.distanceKm(),
                             Comparator.nullsLast(Comparator.naturalOrder())))
                     .toList();
+        } else if ("price_asc".equalsIgnoreCase(sort) || "price_low".equalsIgnoreCase(sort) || "price".equalsIgnoreCase(sort)) {
+            items = items.stream()
+                    .sorted(Comparator.comparing((VenueSummaryDto v) -> v.fromPrice() == null ? BigDecimal.valueOf(Double.MAX_VALUE) : v.fromPrice()))
+                    .toList();
+        } else if ("price_desc".equalsIgnoreCase(sort) || "price_high".equalsIgnoreCase(sort)) {
+            items = items.stream()
+                    .sorted(Comparator.comparing((VenueSummaryDto v) -> v.fromPrice() == null ? BigDecimal.ZERO : v.fromPrice(), Comparator.reverseOrder()))
+                    .toList();
         }
 
         return new PagedResponse<>(items, result.getNumber(), result.getSize(),
@@ -53,6 +61,14 @@ public class VenueSearchService {
 
     public VenueDetailDto getBySlug(String slug) {
         Venue venue = venueRepository.findBySlug(slug)
+                .or(() -> {
+                    try {
+                        return venueRepository.findById(Long.parseLong(slug));
+                    } catch (NumberFormatException e) {
+                        return java.util.Optional.empty();
+                    }
+                })
+                .or(() -> venueRepository.findByVenueCode(slug))
                 .orElseThrow(() -> new VenueNotFoundException(slug));
         return toDetail(venue);
     }
@@ -93,7 +109,8 @@ public class VenueSearchService {
                 sports,
                 cheapest == null ? null : cheapest.getRate(),
                 cheapest == null ? null : cheapest.getSlotDurationMin(),
-                distance);
+                distance,
+                amenityList(venue.getPhotos()));
     }
 
     private VenueDetailDto toDetail(Venue venue) {
@@ -129,6 +146,8 @@ public class VenueSearchService {
             return Sort.by(Sort.Direction.DESC, "ratingAvg");
         }
         return switch (sort.toLowerCase()) {
+            case "price_asc", "price_low", "price" -> Sort.by(Sort.Direction.ASC, "basePrice");
+            case "price_desc", "price_high" -> Sort.by(Sort.Direction.DESC, "basePrice");
             case "rating" -> Sort.by(Sort.Direction.DESC, "ratingAvg");
             case "name" -> Sort.by(Sort.Direction.ASC, "name");
             case "newest" -> Sort.by(Sort.Direction.DESC, "createdAt");

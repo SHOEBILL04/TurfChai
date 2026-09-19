@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
@@ -49,14 +49,20 @@ const FILTER_GROUPS = [
     id: 'price',
     title: 'Price',
     options: [
-      { value: '300', label: 'Under ৳300' },
-      { value: '500', label: 'Under ৳500' },
+      { value: 'free', label: 'Free' },
+      { value: 'under-500', label: 'Under ৳500' },
+      { value: '500-1000', label: '৳500–৳1,000' },
+      { value: 'over-1000', label: '৳1,000+' },
     ],
   },
   {
-    id: 'availability',
+    id: 'spots',
     title: 'Availability',
-    options: [{ value: 'open', label: '⚡ Spots available' }],
+    options: [
+      { value: 'urgent', label: '🔥 Last spot' },
+      { value: 'almost-full', label: 'Almost full' },
+      { value: 'plenty', label: 'Plenty of space' },
+    ],
   },
 ];
 
@@ -67,56 +73,61 @@ const SORT_OPTIONS = [
   { value: 'time', label: 'Soonest first' },
 ];
 
-const CLOSED_STATUSES = new Set(['FULL', 'COMPLETED', 'CANCELLED']);
-
-const spotsOf = (game) => Math.max(0, Number(game?.spotsLeft ?? 0));
-
-/** Which of the four feed buckets a game belongs to. */
-function sectionFor(game) {
-  if (CLOSED_STATUSES.has(game.status) || spotsOf(game) === 0) return 'full';
-  if (spotsOf(game) === 1) return 'urgent';
-  if (game.status === 'ALMOST_FULL') return 'almost-full';
-  return 'open';
-}
-
-/** Full games sink to the bottom of an urgency sort instead of the top. */
-const urgencyRank = (game) => (spotsOf(game) > 0 ? spotsOf(game) : Number.POSITIVE_INFINITY);
-
 const SORTERS = {
-  urgency: (a, b) => urgencyRank(a) - urgencyRank(b) || kickoffMs(a) - kickoffMs(b),
+  urgency: (a, b) => spotsOf(a) - spotsOf(b) || kickoffMs(a) - kickoffMs(b),
+  time: (a, b) => kickoffMs(a) - kickoffMs(b),
   'price-asc': (a, b) => Number(a.pricePerPlayer ?? 0) - Number(b.pricePerPlayer ?? 0),
   'price-desc': (a, b) => Number(b.pricePerPlayer ?? 0) - Number(a.pricePerPlayer ?? 0),
-  time: (a, b) => kickoffMs(a) - kickoffMs(b),
 };
 
-/** Wraps the first case-insensitive hit in `<mark class="sh">`, like the prototype. */
-function Highlight({ text, query }) {
-  const value = text ?? '';
-  if (!query) return value;
-  const index = value.toLowerCase().indexOf(query);
-  if (index === -1) return value;
-  return (
-    <>
-      {value.slice(0, index)}
-      <mark className="sh">{value.slice(index, index + query.length)}</mark>
-      {value.slice(index + query.length)}
-    </>
-  );
+function spotsOf(game) {
+  return Math.max(0, Number(game.spotsLeft ?? 0));
 }
 
-/** Client-side pass for the filters the endpoint does not accept. */
-function matchesClientFilters(game, filters) {
-  if (filters.price && Number(game.pricePerPlayer ?? 0) > Number(filters.price)) return false;
-  if (filters.availability === 'open' && spotsOf(game) === 0) return false;
-  return true;
+function sectionFor(game) {
+  const spots = spotsOf(game);
+  if (spots === 1) return 'urgent';
+  if (spots <= 3) return 'almost-full';
+  return 'open';
 }
 
 function statusBadgeFor(game, section) {
   const spots = spotsOf(game);
-  if (section === 'full') return { tone: 'gray', text: 'Full · closed' };
-  if (section === 'urgent') return { tone: 'red', text: 'Urgent · needs 1 player' };
-  if (section === 'almost-full') return { tone: 'amber', text: `Almost full · ${spots} spots` };
-  return { tone: 'green', text: `Open · ${spots} spot${spots === 1 ? '' : 's'} left` };
+  if (spots === 0) return { tone: 'red', text: 'Full' };
+  if (section === 'urgent') return { tone: 'red', text: '🔥 1 spot left' };
+  if (section === 'almost-full') return { tone: 'amber', text: `${spots} spots left` };
+  return { tone: 'green', text: `${spots} spots left` };
+}
+
+function matchesClientFilters(game, filters) {
+  const price = Number(game.pricePerPlayer ?? 0);
+  if (filters.price === 'free' && price > 0) return false;
+  if (filters.price === 'under-500' && price >= 500) return false;
+  if (filters.price === '500-1000' && (price < 500 || price > 1000)) return false;
+  if (filters.price === 'over-1000' && price <= 1000) return false;
+
+  const section = sectionFor(game);
+  if (filters.spots && filters.spots !== section) {
+    if (filters.spots === 'plenty' && section !== 'open') return false;
+    if (filters.spots !== 'plenty') return false;
+  }
+  return true;
+}
+
+function Highlight({ text, query }) {
+  if (!query || !text) return text ?? null;
+  const index = text.toLowerCase().indexOf(query.toLowerCase());
+  if (index === -1) return text;
+  const before = text.slice(0, index);
+  const match = text.slice(index, index + query.length);
+  const after = text.slice(index + query.length);
+  return (
+    <>
+      {before}
+      <mark className="hl">{match}</mark>
+      {after}
+    </>
+  );
 }
 
 const AVATAR_TONES = [undefined, 'b', 'c'];
@@ -139,7 +150,7 @@ function GameCard({ game, query }) {
   const whenLabel = `${formatGameDay(game.gameDate)} ${formatTimeRange(game.startTime, game.endTime)}`.trim();
 
   return (
-    <Link className={cardClass} to={paths.solo.game(game.id)}>
+    <div className={cardClass}>
       {section === 'urgent' ? <div className="urgent-glow" /> : null}
       <div className="between" style={{ flexWrap: 'wrap', gap: 8 }}>
         <span className={`badge ${status.tone}`}>{status.text}</span>
@@ -158,15 +169,15 @@ function GameCard({ game, query }) {
             <span className="gc-venue">
               <Highlight text={game.venueName} query={query} />
             </span>
-            {metaParts.map((part) => (
-              <Fragment key={part}>
-                <span className="dot-sep">·</span>
-                <span>{part}</span>
-              </Fragment>
-            ))}
+            {metaParts.length ? (
+              <>
+                <span className="dot" />
+                <span>{metaParts.join(' · ')}</span>
+              </>
+            ) : null}
             {whenLabel ? (
               <>
-                <span className="dot-sep">·</span>
+                <span className="dot" />
                 <b style={{ color: 'var(--text)' }}>{whenLabel}</b>
               </>
             ) : null}
@@ -178,7 +189,7 @@ function GameCard({ game, query }) {
         </div>
       </div>
       <div>
-        <div className="between" style={{ marginBottom: 5 }}>
+        <div className="between" style={{ marginBottom: 8 }}>
           <span className="host-tag">
             <span className="stars-mini">★</span>
             <b>{game.organizerName ?? 'TurfChai host'}</b>
@@ -198,31 +209,29 @@ function GameCard({ game, query }) {
           </span>
         </div>
         <div className={`fill-bar ${fillTone}`}>
-          <i style={{ width: fillWidth }} />
+          <div className="fill" style={{ width: fillWidth }} />
         </div>
       </div>
-      <div className="gc-bottom">
-        <div className="gc-players">
-          <div className="avatar-group">
-            {shownMembers.map((member, index) => (
-              <span
-                key={member.id ?? member.userId}
-                className={AVATAR_TONES[index] ? `avatar sm ${AVATAR_TONES[index]}` : 'avatar sm'}
-              >
-                {member.initials ?? '??'}
-              </span>
-            ))}
-            {overflow > 0 ? <span className="avatar sm d">+{overflow}</span> : null}
-          </div>
-          <span className="subtle small">
-            {spots === 1 ? 'Waiting for 1 more' : `${spots} spots remaining`}
-          </span>
+      <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
+        <div className="avatar-group">
+          {shownMembers.map((member, index) => (
+            <span
+              key={member.userId ?? index}
+              className={`av av-sm ${AVATAR_TONES[index % AVATAR_TONES.length] ?? ''}`}
+            >
+              {(member.fullName ?? 'P')[0]}
+            </span>
+          ))}
+          {overflow > 0 ? <span className="av-count">+{overflow}</span> : null}
         </div>
-        <span className={`btn btn-sm btn-${spots === 1 ? 'primary' : 'secondary'}`}>
+        <Link
+          className={`btn btn-sm btn-${spots === 1 ? 'primary' : 'secondary'}`}
+          to={paths.solo.game(game.id)}
+        >
           {spots === 1 ? 'View & Join →' : 'View →'}
-        </span>
+        </Link>
       </div>
-    </Link>
+    </div>
   );
 }
 
@@ -231,11 +240,21 @@ export default function OpenGamesPage() {
   const createModal = useDisclosure(false);
   const { signedIn } = useSession();
   const { showToast } = useToast();
+  const [searchParams] = useSearchParams();
 
-  const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [query, setQuery] = useState(() => searchParams.get('q') ?? '');
+  const [debouncedQuery, setDebouncedQuery] = useState(() => searchParams.get('q') ?? '');
   const [sort, setSort] = useState('urgency');
   const [filters, setFilters] = useState({});
+
+  // Sync state when the URL's q param changes while mounted — adjusted during render.
+  const qParam = searchParams.get('q') ?? '';
+  const [prevQParam, setPrevQParam] = useState(qParam);
+  if (prevQParam !== qParam) {
+    setPrevQParam(qParam);
+    setQuery(qParam);
+    setDebouncedQuery(qParam);
+  }
 
   // Debounced so the search box does not fire a request per keystroke.
   useEffect(() => {
@@ -327,7 +346,7 @@ export default function OpenGamesPage() {
     <>
       <PageTitle title="Open Games" />
 
-      <main className="wrap" id="main" style={{ paddingTop: 20, maxWidth: 960 }}>
+      <main className="wrap" id="main" style={{ paddingTop: 20, paddingBottom: 48, maxWidth: 960 }}>
         {/* ═══ HERO ═══ */}
         <section className="og-hero" style={{ marginBottom: 0 }}>
           <div className="og-hero-layout">
@@ -358,9 +377,6 @@ export default function OpenGamesPage() {
                 <Link className="btn btn-secondary" to={paths.solo.alerts}>
                   🔔 Set LFG Alert
                 </Link>
-                <Link className="btn btn-secondary" to={paths.player.explore}>
-                  Explore Venues →
-                </Link>
               </div>
             </div>
             <div className="og-stats">
@@ -383,22 +399,24 @@ export default function OpenGamesPage() {
           <div className="og-toolbar-inner">
             <div className="og-search-row">
               <div className={query ? 'og-search-box has-text' : 'og-search-box'}>
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+                <span
                   aria-hidden="true"
+                  style={{
+                    position: 'absolute',
+                    left: 16,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    fontSize: 16,
+                    pointerEvents: 'none',
+                    lineHeight: 1,
+                  }}
                 >
-                  <circle cx="11" cy="11" r="8" />
-                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                </svg>
+                  🔍
+                </span>
                 <input
                   type="search"
                   id="game-search"
-                  placeholder="Search games, venues, hosts…"
+                  placeholder="Turf, sport, or area…"
                   autoComplete="off"
                   aria-label="Search open games"
                   value={query}

@@ -76,6 +76,28 @@ public class SecurityConfig {
                                                 .permitAll()
                                                 .requestMatchers("/error").permitAll()
 
+                                                // ── SPA entry points (single-origin deployment) ──
+                                                // The jar also serves the React bundle, so the
+                                                // client-side route prefixes must be readable
+                                                // without a token — browsing is deliberately
+                                                // public (see catalogue rules above), and the
+                                                // guards inside the SPA decide which of these
+                                                // render signed-out versus redirect to a login.
+                                                .requestMatchers(HttpMethod.GET,
+                                                                "/",
+                                                                "/index.html",
+                                                                "/admin/**",
+                                                                "/auth/**",
+                                                                "/host/**",
+                                                                "/owner/**",
+                                                                "/player/**",
+                                                                "/solo/**",
+                                                                "/ai-chat.html",
+                                                                "/assets/**",
+                                                                "/favicon.svg",
+                                                                "/icons.svg")
+                                                .permitAll()
+
                                                 // ── Public catalogue (READ ONLY) ──────────────────────
                                                 // Venue discovery and slot availability are genuinely
                                                 // public: a visitor must be able to browse and see when a
@@ -87,7 +109,8 @@ public class SecurityConfig {
                                                                 "/api/v1/venues/*",
                                                                 "/api/v1/venues/*/reviews",
                                                                 "/api/v1/venues/*/slots",
-                                                                "/api/v1/venues/*/slots/stream")
+                                                                "/api/v1/venues/*/slots/stream",
+                                                                "/api/v1/venues/*/promotions/available")
                                                 .permitAll()
                                                 .requestMatchers(HttpMethod.GET,
                                                                 "/api/v1/solo/open-games",
@@ -101,6 +124,9 @@ public class SecurityConfig {
                                                 // Checkout helper: validates a code against an order total.
                                                 .requestMatchers(HttpMethod.POST, "/api/v1/promotions/validate-code")
                                                 .permitAll()
+                                                // Split share landing page & payment
+                                                .requestMatchers(HttpMethod.GET, "/api/v1/bookings/share/*").permitAll()
+                                                .requestMatchers(HttpMethod.POST, "/api/v1/bookings/share/*/pay").permitAll()
 
                                                 // ── AI assistant ──────────────────────────────────────
                                                 // The chat widget is on public marketing pages, so the

@@ -4,13 +4,11 @@ import { Button } from '@/components/buttons/Button';
 import { Card } from '@/components/cards/Card';
 import { PageTitle } from '@/components/common/PageTitle';
 import { Field, Input } from '@/components/forms/Field';
-import { OtpInput } from '@/components/forms/OtpInput';
 import { Tabs, TabPanel } from '@/components/navigation/Tabs';
 import { useToast } from '@/hooks/useToast';
 import { paths } from '@/routes/paths';
-import { login, register, checkEmail, requestOtp, verifyOtp } from '@/api/auth';
+import { login, register, checkEmail } from '@/api/auth';
 import { setSession } from '@/api/client';
-import { toUserMessage } from '@/utils/errorMessage';
 
 const EyeIcon = ({ off = false }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -20,7 +18,7 @@ const EyeIcon = ({ off = false }) => (
   </svg>
 );
 
-const ROLE_TO_API = { player: 'PLAYER', owner: 'OWNER', admin: 'ADMIN' };
+const ROLE_TO_API = { player: 'PLAYER', owner: 'OWNER' };
 
 const ROLES = [
   {
@@ -35,17 +33,10 @@ const ROLES = [
     subtext: 'Manage pitches & payouts',
     tone: '#F59E0B',
   },
-  {
-    id: 'admin',
-    label: '🛡️ Admin',
-    subtext: 'Platform control & reviews',
-    tone: '#3B82F6',
-  },
 ];
 
 const AUTH_TABS = [
   { id: 'signin', label: 'Sign in' },
-  { id: 'phone', label: 'Phone code' },
   { id: 'signup', label: 'Create account' },
 ];
 
@@ -74,22 +65,21 @@ export default function AuthPage() {
   // fading toast reading "password: ..." left the user with nothing to act on.
   const [fieldErrors, setFieldErrors] = useState({});
 
-  // Phone sign-in. Doubles as account recovery: there is no password to reset,
-  // so a code to the registered number is how you get back in.
-  const [otpPhone, setOtpPhone] = useState('');
-  const [otpStep, setOtpStep] = useState('phone'); // 'phone' | 'code'
-  const [otpCode, setOtpCode] = useState('');
-  const [otpName, setOtpName] = useState('');
-  const [otpDevCode, setOtpDevCode] = useState(null);
-  const [otpError, setOtpError] = useState(null);
-
   const activeRoleConfig = ROLES.find((r) => r.id === role);
 
   /** Map the DB role (returned by the login API) to a redirect destination */
   const getDestinationByRole = (apiRole) => {
-    if (nextPath && nextPath.startsWith('/')) return nextPath;
-    if (apiRole === 'ADMIN' || apiRole === 'SUPER_ADMIN') return paths.admin.dashboard;
-    if (apiRole === 'OWNER') return paths.owner.dashboard;
+    if (apiRole === 'ADMIN' || apiRole === 'SUPER_ADMIN') {
+      if (nextPath && nextPath.startsWith('/admin')) return nextPath;
+      return paths.admin.dashboard;
+    }
+    if (apiRole === 'OWNER') {
+      if (nextPath && nextPath.startsWith('/owner')) return nextPath;
+      return paths.owner.dashboard;
+    }
+    if (nextPath && (nextPath.startsWith('/player') || nextPath.startsWith('/solo') || nextPath.startsWith('/tournaments'))) {
+      return nextPath;
+    }
     return paths.player.home;
   };
 
@@ -102,54 +92,6 @@ export default function AuthPage() {
       showToast(error?.message || 'Something went wrong. Please try again.', { duration: 5000 });
     }
     setIsSubmitting(false);
-  };
-
-  const handleRequestOtp = async (event) => {
-    event?.preventDefault();
-    const phone = otpPhone.trim();
-    if (!/^\+?[0-9\s\-()]{7,20}$/.test(phone)) {
-      setOtpError('Enter a valid phone number');
-      return;
-    }
-    setOtpError(null);
-    setIsSubmitting(true);
-    try {
-      const response = await requestOtp(phone);
-      // Only present when the server is configured to expose it; in a real
-      // deployment the code arrives by SMS and this stays null.
-      setOtpDevCode(response?.devCode ?? null);
-      setOtpCode('');
-      setOtpStep('code');
-      showToast(response?.message || 'Verification code sent');
-    } catch (error) {
-      setOtpError(toUserMessage(error, 'Could not send a code to that number.'));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleVerifyOtp = async (event) => {
-    event?.preventDefault();
-    if (otpCode.trim().length < 4) {
-      setOtpError('Enter the 4-digit code');
-      return;
-    }
-    setOtpError(null);
-    setIsSubmitting(true);
-    try {
-      const response = await verifyOtp({
-        phone: otpPhone.trim(),
-        code: otpCode.trim(),
-        fullName: otpName.trim() || undefined,
-      });
-      setSession(response);
-      showToast('Signed in successfully ✓');
-      navigate(getDestinationByRole(response?.user?.role ?? 'PLAYER'));
-    } catch (error) {
-      setOtpError(toUserMessage(error, 'That code was not accepted.'));
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   const handleQuickSubmit = async (e) => {
@@ -202,7 +144,6 @@ export default function AuthPage() {
       setSession(response);
       showToast(`Account created! Welcome to TurfChai ✓`);
       if (nextPath && nextPath.startsWith('/')) navigate(nextPath);
-      else if (role === 'admin') navigate(paths.admin.dashboard);
       else navigate(paths.player.onboarding);
     } catch (error) {
       handleApiError(error);
@@ -284,112 +225,35 @@ export default function AuthPage() {
               </Button>
             </form>
 
-            <p className="subtle center tiny" style={{ marginTop: 16, marginBottom: 0 }}>
-              Forgot your password?{' '}
-              <button
-                type="button"
-                className="btn btn-tertiary btn-sm"
-                onClick={() => {
-                  setOtpError(null);
-                  setTab('phone');
-                }}
-              >
-                Sign in with a phone code
-              </button>
-            </p>
-          </TabPanel>
-
-          {/* PHONE CODE TAB — also the account-recovery path */}
-          <TabPanel id="phone" value={tab}>
-            <h2 style={{ fontSize: 20, fontWeight: 800, margin: '0 0 4px' }}>Sign in with your phone</h2>
-            <p className="subtle small" style={{ marginBottom: 18 }}>
-              We send a short code to your number. Use this if you have forgotten your password —
-              TurfChai has no password-reset email.
-            </p>
-
-            {otpStep === 'phone' ? (
-              <form onSubmit={handleRequestOtp}>
-                <Field label="Phone number" htmlFor="otpPhone">
-                  <Input
-                    id="otpPhone"
-                    type="tel"
-                    inputMode="tel"
-                    autoComplete="tel"
-                    placeholder="+8801XXXXXXXXX"
-                    value={otpPhone}
-                    onChange={(event) => setOtpPhone(event.target.value)}
-                  />
-                </Field>
-
-                {otpError ? (
-                  <div className="alert warn" role="status" style={{ marginTop: 8 }}>
-                    <span className="ico">⚠️</span>
-                    <div>{otpError}</div>
-                  </div>
-                ) : null}
-
-                <Button variant="primary" block type="submit" style={{ marginTop: 8 }} disabled={isSubmitting}>
-                  {isSubmitting ? 'Sending…' : 'Send code'}
-                </Button>
-              </form>
-            ) : (
-              <form onSubmit={handleVerifyOtp}>
-                <p className="subtle small">
-                  Enter the code sent to <b>{otpPhone}</b>.
-                </p>
-
-                {otpDevCode ? (
-                  <div className="alert info" style={{ marginBottom: 10 }}>
-                    <span className="ico" aria-hidden="true">🔑</span>
-                    <div className="small">
-                      Development code: <b className="num">{otpDevCode}</b>
-                    </div>
-                  </div>
-                ) : null}
-
-                <Field label="Verification code" htmlFor="otpCode">
-                  <OtpInput length={4} value={otpCode} onChange={setOtpCode} label="Verification code" />
-                </Field>
-
-                <Field
-                  label="Your name"
-                  htmlFor="otpName"
-                  hint="Only needed if this number does not have an account yet."
-                >
-                  <Input
-                    id="otpName"
-                    value={otpName}
-                    autoComplete="name"
-                    onChange={(event) => setOtpName(event.target.value)}
-                  />
-                </Field>
-
-                {otpError ? (
-                  <div className="alert warn" role="status" style={{ marginTop: 8 }}>
-                    <span className="ico">⚠️</span>
-                    <div>{otpError}</div>
-                  </div>
-                ) : null}
-
-                <Button variant="primary" block type="submit" style={{ marginTop: 8 }} disabled={isSubmitting}>
-                  {isSubmitting ? 'Verifying…' : 'Verify & sign in →'}
-                </Button>
-                <Button
-                  variant="tertiary"
-                  block
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px dashed var(--border-soft)' }}>
+              <span className="tiny subtle" style={{ display: 'block', marginBottom: 8, fontWeight: 700 }}>
+                DEMO SIGN-IN ACCOUNTS (Password: TurfChai@123)
+              </span>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button
                   type="button"
-                  style={{ marginTop: 8 }}
+                  className="btn btn-sm btn-secondary"
+                  style={{ fontSize: 12, padding: '4px 10px' }}
                   onClick={() => {
-                    setOtpStep('phone');
-                    setOtpCode('');
-                    setOtpDevCode(null);
-                    setOtpError(null);
+                    setSigninEmail('rafi@turfchai.com');
+                    setSigninPassword('TurfChai@123');
                   }}
                 >
-                  Use a different number
-                </Button>
-              </form>
-            )}
+                  ⚽ Player (Rafi)
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  style={{ fontSize: 12, padding: '4px 10px' }}
+                  onClick={() => {
+                    setSigninEmail('mahmud@turfchai.com');
+                    setSigninPassword('TurfChai@123');
+                  }}
+                >
+                  🏟️ Owner (Mahmud)
+                </button>
+              </div>
+            </div>
           </TabPanel>
 
           {/* SIGN UP TAB */}

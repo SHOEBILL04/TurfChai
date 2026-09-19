@@ -84,6 +84,24 @@ public class BookingService {
                 && userId.equals(slot.getHeldByUserId())
                 && !expiredHold;
 
+        // One active hold per player at a time. Without this, a player could
+        // hold a second slot while still sitting on the first, tying up two
+        // venues' inventory for the same 5-minute window with no way to tell
+        // which one they actually meant to book — this is also what keeps
+        // the "resume your booking" prompt on the frontend pointing at a
+        // single, unambiguous slot.
+        if (!ownActiveHold) {
+            slotRepository.findActiveHoldsByUser(userId, SlotStatus.HELD, now)
+                    .stream()
+                    .filter(other -> !other.getId().equals(slotId))
+                    .findFirst()
+                    .ifPresent(other -> {
+                        throw new SlotUnavailableException(
+                                "You already have a slot on hold (slot " + other.getId()
+                                        + "). Finish or let that hold expire before holding another.");
+                    });
+        }
+
         if (slot.getStatus() == SlotStatus.AVAILABLE || expiredHold || ownActiveHold) {
             OffsetDateTime heldUntil = now.plusMinutes(HOLD_DURATION_MINUTES);
             slot.setStatus(SlotStatus.HELD);
@@ -95,6 +113,49 @@ public class BookingService {
             return heldUntil;
         }
         throw new SlotUnavailableException("Slot is not available for booking");
+    }
+
+    /**
+     * The caller's currently active hold, if any — powers the "you have a
+     * booking in progress" prompt shown across the player app so a player
+     * who navigated away mid-checkout can find their way back to it.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<Slot> getActiveHold(Long userId) {
+        if (userId == null) {
+            return java.util.Optional.empty();
+        }
+        return slotRepository.findActiveHoldsByUser(userId, SlotStatus.HELD, OffsetDateTime.now())
+                .stream()
+                .findFirst();
+    }
+
+    /**
+     * Releases an active hold owned by the caller so the slot returns to
+     * AVAILABLE immediately rather than tying up inventory for 5 minutes.
+     */
+    @Transactional
+    public void releaseHold(Long userId, Long slotId) {
+        if (slotId == null || userId == null) {
+            return;
+        }
+        Slot slot = slotRepository.findByIdForUpdate(slotId)
+                .orElseThrow(() -> new SlotUnavailableException("Slot not found with id: " + slotId));
+
+        if (slot.getStatus() == SlotStatus.HELD && userId.equals(slot.getHeldByUserId())) {
+            slot.setStatus(SlotStatus.AVAILABLE);
+            slot.setHeldByUserId(null);
+            slot.setHoldExpiresAt(null);
+            slotRepository.save(slot);
+            events.publishEvent(SlotStatusChangedEvent.of(
+                    slot.getId(), slot.getVenueId(), slot.getSlotDate(), SlotStatus.AVAILABLE));
+
+            bookingRepository.findBySlotIdAndUserIdAndStatus(slotId, userId, BookingStatus.PENDING)
+                    .ifPresent(booking -> {
+                        booking.setStatus(BookingStatus.CANCELLED);
+                        bookingRepository.save(booking);
+                    });
+        }
     }
 
     /**
@@ -413,6 +474,11 @@ public class BookingService {
                 .promoCode(booking.getPromoCode())
                 .discountAmount(booking.getDiscountAmount())
                 .checkedInAt(booking.getCheckedInAt())
+                .splitEnabled(booking.getSplitEnabled())
+                .splitDeadline(booking.getSplitDeadline())
+                .splitTotalPaid(booking.getSplitTotalPaid())
+                .splitRemaining(booking.getSplitRemaining())
+                .openGameId(booking.getOpenGameId())
                 .createdAt(booking.getCreatedAt())
                 .updatedAt(booking.getUpdatedAt())
                 .build();

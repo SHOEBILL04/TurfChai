@@ -1,12 +1,21 @@
-import { useParams } from "react-router-dom";
+import { useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { PageTitle } from "@/components/common/PageTitle";
 import { Button } from "@/components/buttons/Button";
 import { Breadcrumbs } from "@/components/navigation/Breadcrumbs";
-import { getBooking } from "@/api/bookings";
+import { Field, Input } from "@/components/forms/Field";
+import { Overlay } from "@/components/modals/Overlay";
+import { QrCode } from "@/components/common/QrCode";
+import { downloadBookingPdf, getBooking } from "@/api/bookings";
 import { getPaymentsForBooking, getRefundPreview } from "@/api/payments";
+import { getOpenGame } from "@/api/openGames";
+import { enableBookingSplit, getBookingSplitStatus } from "@/api/splitPayment";
+import { CreateGameDrawer } from "@/solo/CreateGameDrawer";
 import { getUser } from "@/api/client";
 import { useApi } from "@/hooks/useApi";
+import { useToast } from "@/hooks/useToast";
 import { canCall, canGetDirections, callNumber, openDirections } from "@/utils/deviceActions";
+import { toUserMessage } from "@/utils/errorMessage";
 import { paths } from "@/routes/paths";
 import "./BookingDetailPage.css";
 
@@ -19,6 +28,7 @@ const STATUS_BADGE = {
 const PAYMENT_TYPE_LABEL = {
   BOOKING: "Booking payment",
   REFUND: "Refund",
+  SPLIT_SHARE: "Split share",
 };
 
 const bdt = (value) =>
@@ -48,11 +58,58 @@ function formatDateTime(iso) {
 
 export default function BookingDetailPage() {
   const { bookingId } = useParams();
+  const [searchParams] = useSearchParams();
+  const { showToast } = useToast();
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
-  const { data: booking, loading, error } = useApi(
+  // Split and open game states — seeded from the ?action= URL param on mount
+  const [splitModalOpen, setSplitModalOpen] = useState(
+    searchParams.get("action") === "split",
+  );
+  const [splitPlayerCount, setSplitPlayerCount] = useState("5");
+  const [enablingSplit, setEnablingSplit] = useState(false);
+  const [activeQrMember, setActiveQrMember] = useState(null);
+  const [openGameDrawerOpen, setOpenGameDrawerOpen] = useState(
+    searchParams.get("action") === "open-game",
+  );
+
+  const { data: booking, loading, error, reload: reloadBooking } = useApi(
     () => getBooking(bookingId),
     [bookingId],
   );
+
+  const currentUser = getUser();
+  const isOwner =
+    booking &&
+    currentUser &&
+    Number(booking.userId) === Number(currentUser.id);
+
+  // Split status
+  const splitApi = useApi(
+    () => (bookingId && isOwner ? getBookingSplitStatus(bookingId) : Promise.resolve(null)),
+    [bookingId, isOwner, booking?.splitEnabled],
+  );
+  const splitData = splitApi.data;
+
+  // Linked open game status if posted
+  const openGameId = booking?.openGameId || splitData?.openGameId;
+  const openGameApi = useApi(
+    () => (openGameId ? getOpenGame(openGameId) : Promise.resolve(null)),
+    [openGameId],
+  );
+  const openGameData = openGameApi.data;
+
+  const handleDownloadPdf = async () => {
+    if (!booking) return;
+    setDownloadingPdf(true);
+    try {
+      await downloadBookingPdf(booking);
+    } catch (downloadError) {
+      showToast(toUserMessage(downloadError, "Could not download the PDF. Please try again."));
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   const paymentsApi = useApi(
     () => (bookingId ? getPaymentsForBooking(bookingId) : Promise.resolve([])),
@@ -73,11 +130,41 @@ export default function BookingDetailPage() {
     [bookingId, booking?.status],
   );
 
-  const currentUser = getUser();
-  const isOwner =
-    booking &&
-    currentUser &&
-    Number(booking.userId) === Number(currentUser.id);
+  const handleEnableSplit = async (e) => {
+    e?.preventDefault?.();
+    const count = Number(splitPlayerCount);
+    if (!count || count < 2 || count > 50) {
+      showToast("Player count must be between 2 and 50");
+      return;
+    }
+    setEnablingSplit(true);
+    try {
+      await enableBookingSplit(bookingId, { playerCount: count });
+      showToast("Price split enabled! Share links are ready 🚀");
+      setSplitModalOpen(false);
+      splitApi.reload();
+      reloadBooking();
+    } catch (err) {
+      showToast(toUserMessage(err, "Could not enable split."));
+    } finally {
+      setEnablingSplit(false);
+    }
+  };
+
+  const getShareUrl = (token) => {
+    if (!token) return "";
+    return `${window.location.origin}${paths.player.payShareFor(token)}`;
+  };
+
+  const handleCopyShareLink = async (token) => {
+    const url = getShareUrl(token);
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("Share link copied to clipboard 📋");
+    } catch {
+      showToast("Could not copy link");
+    }
+  };
 
   const badge = STATUS_BADGE[booking?.status] ?? STATUS_BADGE.CONFIRMED;
 
@@ -128,7 +215,6 @@ export default function BookingDetailPage() {
     { id: "handover", label: "ARRIVE BY", value: "10 min early" },
   ];
 
-  // Chronological, oldest first: booking created -> each payment/refund in order.
   const timeline = [
     { id: "created", title: "Booking created", when: formatDateTime(booking?.createdAt) },
     ...payments
@@ -151,24 +237,24 @@ export default function BookingDetailPage() {
         })),
   ];
 
-  // A split payment writes one row per tender, so the total has to be a sum.
-  // Reading a single row reported only the first leg as the amount paid.
   const settledTotal = payments
-    .filter((p) => p.type === "BOOKING" && p.status !== "FAILED")
+    .filter((p) => (p.type === "BOOKING" || p.type === "SPLIT_SHARE") && p.status !== "FAILED")
     .reduce((sum, p) => sum + Number(p.amount ?? 0), 0);
   const refundPayment = payments.find((p) => p.type === "REFUND");
   const refundedTotal = payments
     .filter((p) => p.type === "REFUND" && p.status !== "FAILED")
     .reduce((sum, p) => sum + Number(p.amount ?? 0), 0);
 
-  // What the player still owes, rather than what has already been collected.
-  // The summary used to label the settled figure "Total due", so an unpaid
-  // booking claimed a balance of zero and a paid one claimed the full price.
   const netPaid = settledTotal - refundedTotal;
   const isCancelled = booking?.status === "CANCELLED";
   const stillDue = isCancelled
     ? 0
     : Math.max(0, Number(booking?.netAmount ?? 0) - netPaid);
+
+  const isSplitActive = splitData?.splitEnabled && Array.isArray(splitData?.members) && splitData.members.length > 0;
+  const paidMembersCount = splitData?.paidCount ?? 0;
+  const totalMembersCount = splitData?.totalPlayers ?? 0;
+  const splitPercent = totalMembersCount > 0 ? Math.round((paidMembersCount / totalMembersCount) * 100) : 0;
 
   return (
     <>
@@ -203,7 +289,7 @@ export default function BookingDetailPage() {
 
         <div className="bd-grid">
           <div className="stack">
-            {/* Single source of truth */}
+            {/* Match details */}
             <section className="card">
               <h3>Match details</h3>
               <div className="grid3" style={{ marginTop: 8, gap: 10 }}>
@@ -216,7 +302,7 @@ export default function BookingDetailPage() {
                 ))}
               </div>
               <div className="row" style={{ marginTop: 12 }}>
-                <Button size="sm" variant="primary" to={paths.player.matchday}>
+                <Button size="sm" variant="primary" to={paths.player.matchdayFor(booking?.id)}>
                   Open match-day ticket
                 </Button>
                 <Button
@@ -304,6 +390,184 @@ export default function BookingDetailPage() {
           </div>
 
           <aside className="stack">
+            {/* Squad & Sharing Card */}
+            {isOwner && booking?.status === "CONFIRMED" ? (
+              <div className="squad-card">
+                <div className="between" style={{ marginBottom: 8 }}>
+                  <h4 style={{ margin: 0 }}>⚽ Squad &amp; Sharing</h4>
+                  {isSplitActive ? (
+                    <span className="badge green nodot">{paidMembersCount}/{totalMembersCount} Paid</span>
+                  ) : null}
+                </div>
+
+                {isSplitActive ? (
+                  <div>
+                    <p className="small subtle" style={{ margin: "0 0 6px" }}>
+                      Split equally ({bdt(splitData.shareAmount)} / person). Share the link or QR with friends to collect their share.
+                    </p>
+
+                    <div className="squad-progress-bar-bg">
+                      <div className="squad-progress-bar-fill" style={{ width: `${splitPercent}%` }} />
+                    </div>
+
+                    <div style={{ maxHeight: 220, overflowY: "auto", margin: "10px 0" }}>
+                      {splitData.members.map((m, idx) => {
+                        const isPaid = m.paymentStatus === "PAID";
+                        const shareUrl = getShareUrl(m.shareToken);
+                        const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(
+                          `Hey! Pay your share (${bdt(m.shareAmount)}) for our turf match at ${booking?.venueName}:\n${shareUrl}`
+                        )}`;
+
+                        return (
+                          <div key={m.id} className="split-member-item">
+                            <div className="split-member-left">
+                              <span style={{ fontSize: 15 }}>{m.isCaptain ? "👑" : "👤"}</span>
+                              <div>
+                                <b style={{ display: "block", fontSize: 13 }}>
+                                  {m.isCaptain ? "You (Host)" : m.userName || `Player ${idx + 1}`}
+                                </b>
+                                <span className="tiny subtle">{bdt(m.shareAmount)}</span>
+                              </div>
+                            </div>
+
+                            <div className="split-member-actions">
+                              {isPaid ? (
+                                <span className="badge green nodot">Paid ✓</span>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="share-mini-btn"
+                                    title="Show QR Code"
+                                    onClick={() => setActiveQrMember(m)}
+                                  >
+                                    QR
+                                  </button>
+                                  <a
+                                    href={waUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="share-mini-btn whatsapp"
+                                    title="Share on WhatsApp"
+                                  >
+                                    💬
+                                  </a>
+                                  <button
+                                    type="button"
+                                    className="share-mini-btn"
+                                    title="Copy Link"
+                                    onClick={() => handleCopyShareLink(m.shareToken)}
+                                  >
+                                    📋
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        style={{ flex: 1 }}
+                        onClick={() => setSplitModalOpen(true)}
+                      >
+                        Adjust split
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="tertiary"
+                        style={{ flex: 1 }}
+                        onClick={() => splitApi.reload()}
+                      >
+                        ↻ Refresh
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="small subtle" style={{ margin: "0 0 12px" }}>
+                      Split the cost equally among your squad with instant QR codes and share links.
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      block
+                      onClick={() => setSplitModalOpen(true)}
+                    >
+                      Split the bill
+                    </Button>
+                  </div>
+                )}
+
+                {/* Open Game Section */}
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+                  {openGameData ? (
+                    <div>
+                      <div className="between" style={{ marginBottom: 4 }}>
+                        <b style={{ fontSize: 13 }}>📢 Open Game Active</b>
+                        <span className="badge blue nodot">{openGameData.status}</span>
+                      </div>
+                      <p className="tiny subtle" style={{ margin: "0 0 8px" }}>
+                        {openGameData.filledCount} of {openGameData.capacity} spots filled ({openGameData.spotsLeft} open for strangers).
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        block
+                        to={paths.solo.game(openGameData.id)}
+                      >
+                        View Open Game Roster
+                      </Button>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="between" style={{ marginBottom: 4 }}>
+                        <b style={{ fontSize: 13 }}>Need extra players?</b>
+                      </div>
+                      <p className="tiny subtle" style={{ margin: "0 0 8px" }}>
+                        Reserve spots for your squad and post the remaining spots as an open game.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        block
+                        onClick={() => setOpenGameDrawerOpen(true)}
+                      >
+                        Post open spots
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="pdf-cta">
+              <div className="pdf-cta-head">
+                <span className="pdf-cta-icon" aria-hidden="true">
+                  📄
+                </span>
+                <span className="pdf-cta-text">
+                  <b>Get your receipt</b>
+                  <span>A full PDF copy of this booking, with a scannable ticket QR.</span>
+                </span>
+              </div>
+              <div className="pdf-cta-actions">
+                <Button
+                  className={`pdf-cta-btn btn-shine${downloadingPdf ? " is-busy" : ""}`}
+                  variant="primary"
+                  disabled={!booking}
+                  loading={downloadingPdf}
+                  onClick={handleDownloadPdf}
+                >
+                  Download PDF
+                </Button>
+              </div>
+            </div>
+
             <div className="glass glass-card">
               <h4>Payment summary</h4>
               <div className="pricerow">
@@ -334,6 +598,7 @@ export default function BookingDetailPage() {
                     : 'Nothing left to pay for this booking.'}
               </p>
             </div>
+
             <div className="card">
               <h4>Cancellation policy</h4>
               <p className="small muted" style={{ margin: "4px 0 10px" }}>
@@ -369,6 +634,141 @@ export default function BookingDetailPage() {
           </aside>
         </div>
       </main>
+
+      {/* Split Configuration Modal */}
+      <Overlay
+        isOpen={splitModalOpen}
+        onClose={() => setSplitModalOpen(false)}
+        title="Split booking price"
+        mode="modal"
+      >
+        <form onSubmit={handleEnableSplit} className="stack-sm">
+          <p className="subtle small">
+            Enter the number of players sharing this booking ({bdt(booking?.netAmount)}). Each player gets a shareable link &amp; QR code.
+          </p>
+
+          <Field label="Total number of players" htmlFor="split-players">
+            <Input
+              id="split-players"
+              type="number"
+              min="2"
+              max="50"
+              value={splitPlayerCount}
+              onChange={(e) => setSplitPlayerCount(e.target.value)}
+              required
+            />
+          </Field>
+
+          {Number(splitPlayerCount) >= 2 && (
+            <div
+              style={{
+                padding: "12px 14px",
+                borderRadius: 10,
+                background: "rgba(34, 197, 94, 0.08)",
+                border: "1px solid rgba(34, 197, 94, 0.2)",
+                fontSize: 14,
+                marginBottom: 10,
+              }}
+            >
+              <div className="between">
+                <span>Per person share:</span>
+                <b className="num" style={{ color: "var(--brand)", fontSize: 16 }}>
+                  {bdt(Math.round(Number(booking?.netAmount ?? 0) / Number(splitPlayerCount)))}
+                </b>
+              </div>
+              <div className="tiny subtle" style={{ marginTop: 4 }}>
+                Lock window: 24 hours or until kickoff, whichever is earlier.
+              </div>
+            </div>
+          )}
+
+          <div className="row" style={{ gap: 8, marginTop: 12 }}>
+            <Button
+              type="button"
+              variant="secondary"
+              style={{ flex: 1 }}
+              onClick={() => setSplitModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              style={{ flex: 1 }}
+              loading={enablingSplit}
+              disabled={enablingSplit}
+            >
+              {enablingSplit ? "Generating…" : "Generate Split"}
+            </Button>
+          </div>
+        </form>
+      </Overlay>
+
+      {/* QR Code Viewer Modal */}
+      <Overlay
+        isOpen={Boolean(activeQrMember)}
+        onClose={() => setActiveQrMember(null)}
+        title="Scan to Pay Share"
+        mode="modal"
+      >
+        {activeQrMember && (
+          <div className="center stack-sm" style={{ padding: "8px 0" }}>
+            <p className="subtle small">
+              Ask your teammate to scan this QR code on their phone to complete payment.
+            </p>
+
+            <div style={{ display: "flex", justifyContent: "center", margin: "14px 0" }}>
+              <QrCode
+                value={getShareUrl(activeQrMember.shareToken)}
+                style={{ width: 180, height: 180 }}
+                label="Share Payment QR Code"
+              />
+            </div>
+
+            <div className="pay-share-amount-box" style={{ width: "100%", margin: "8px 0" }}>
+              <span className="tiny subtle">AMOUNT DUE</span>
+              <div className="pay-share-amount-val" style={{ fontSize: 24 }}>
+                {bdt(activeQrMember.shareAmount)}
+              </div>
+            </div>
+
+            <div className="row" style={{ gap: 8, width: "100%", marginTop: 10 }}>
+              <a
+                href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                  `Pay your share (${bdt(activeQrMember.shareAmount)}) for ${booking?.venueName}:\n${getShareUrl(activeQrMember.shareToken)}`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="share-action-btn whatsapp"
+                style={{ flex: 1 }}
+              >
+                💬 WhatsApp
+              </a>
+              <Button
+                variant="secondary"
+                style={{ flex: 1 }}
+                onClick={() => handleCopyShareLink(activeQrMember.shareToken)}
+              >
+                📋 Copy Link
+              </Button>
+            </div>
+          </div>
+        )}
+      </Overlay>
+
+      {/* Create Open Game Drawer */}
+      <CreateGameDrawer
+        isOpen={openGameDrawerOpen}
+        onClose={() => setOpenGameDrawerOpen(false)}
+        defaultBookingId={bookingId}
+        onCreated={() => {
+          setOpenGameDrawerOpen(false);
+          showToast("Open game posted successfully 📢");
+          reloadBooking();
+          splitApi.reload();
+          openGameApi.reload();
+        }}
+      />
     </>
   );
 }

@@ -1,24 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useReducer, useState, useRef } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Brand } from '@/components/common/Brand';
+import { Icon } from '@/components/common/Icon';
 import { RouteErrorBoundary } from '@/components/common/RouteErrorBoundary';
-import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 import { ThemeToggle } from '@/components/buttons/ThemeToggle';
-import { Sidebar } from '@/components/navigation/Sidebar';
 import { Topbar } from '@/components/navigation/Topbar';
 import { Overlay } from '@/components/modals/Overlay';
 import { Badge } from '@/components/ui/Badge';
-import { SidebarProvider } from '@/context/SidebarContext';
 import { OWNER_NAV_LINKS } from '@/constants/navigation';
-import { getUser } from '@/api/client';
-import { getNotifications, getUnreadCount, markAllRead } from '@/api/notifications';
+import { clearSession, getUser } from '@/api/client';
+import { getNotifications, getUnreadCount, markAllRead as markAllNotificationsRead, markRead as markNotificationRead } from '@/api/notifications';
 import { useApi } from '@/hooks/useApi';
 import { useDisclosure } from '@/hooks/useDisclosure';
-import { useSidebar } from '@/hooks/useSidebar';
 import { useToast } from '@/hooks/useToast';
-import { toUserMessage } from '@/utils/errorMessage';
+import { cn } from '@/utils/cn';
 import { paths } from '@/routes/paths';
+import { toUserMessage } from '@/utils/errorMessage';
 
 const fallbackInitials = (name) => {
   if (!name) return '??';
@@ -27,49 +25,73 @@ const fallbackInitials = (name) => {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 };
 
-function OwnerChrome() {
-  const { toggle } = useSidebar();
-  const account = useDisclosure(false);
-  const notifications = useDisclosure(false);
+/** Owner console shell: full-bleed glass topbar + alerts drawer + rollout sign out. */
+export function OwnerLayout() {
+  const [, forceRender] = useReducer((x) => x + 1, 0);
   const { showToast } = useToast();
-  const [, forceRender] = useState(0);
+  const alerts = useDisclosure(false);
+  const [showLogout, setShowLogout] = useState(false);
+  const profileRef = useRef(null);
+
   useEffect(() => {
-    const handler = () => forceRender((x) => x + 1);
+    const handler = () => forceRender();
     window.addEventListener('turfchai:session-change', handler);
     return () => window.removeEventListener('turfchai:session-change', handler);
   }, []);
+
+  useEffect(() => {
+    if (!showLogout) return;
+    const handleClickOutside = (e) => {
+      if (profileRef.current && !profileRef.current.contains(e.target)) {
+        setShowLogout(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setShowLogout(false);
+    };
+    document.addEventListener('pointerdown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showLogout]);
+
   const session = getUser();
   const owner = {
     initials: session?.avatarInitials || fallbackInitials(session?.fullName),
-    name: session?.fullName || 'Owner',
+    name: session?.fullName || 'Turf Owner',
     area: session?.area || '—',
     email: session?.email || '—',
   };
 
-  const { data: notifData, reload: reloadNotifs } = useApi(getNotifications, []);
-  const { data: unreadData, reload: reloadUnread } = useApi(getUnreadCount, []);
-  const notificationsList = Array.isArray(notifData) ? notifData : [];
-  const unreadCount = unreadData?.count ?? 0;
+  const notificationsApi = useApi(getNotifications, []);
+  const unreadApi = useApi(getUnreadCount, []);
+  const ownerAlerts = Array.isArray(notificationsApi.data) ? notificationsApi.data : [];
+  const unreadCount = unreadApi.data?.count ?? 0;
+  const allRead = ownerAlerts.length === 0 || ownerAlerts.every((alert) => alert.isRead);
 
-  const handleMarkAllRead = async () => {
-    try {
-      await markAllRead();
-    } catch (e) {
-      showToast(toUserMessage(e, 'Could not mark your notifications as read.'));
-      return;
-    }
-    reloadNotifs();
-    reloadUnread();
+  const refreshAlerts = () => {
+    notificationsApi.reload();
+    unreadApi.reload();
+  };
+
+  const markRead = (id) => {
+    markNotificationRead(id)
+      .then(refreshAlerts)
+      .catch((e) => showToast(toUserMessage(e, 'Could not mark that alert as read.')));
+  };
+
+  const markAllRead = () => {
+    markAllNotificationsRead()
+      .then(refreshAlerts)
+      .catch((e) => showToast(toUserMessage(e, 'Could not mark alerts as read.')));
   };
 
   return (
     <>
       <Topbar
-        leading={
-          <IconButton className="mobile-menu-btn" label="Toggle menu" onClick={toggle}>
-            ☰
-          </IconButton>
-        }
+        className="admin-topbar owner-topbar"
         brand={
           <Brand
             to={paths.owner.dashboard}
@@ -80,107 +102,110 @@ function OwnerChrome() {
             }
           />
         }
+        links={OWNER_NAV_LINKS}
       >
-        <IconButton
-          label={`Notifications, ${unreadCount} unread`}
-          notify={unreadCount > 0}
-          onClick={notifications.open}
-        >
-          <span aria-hidden="true">🔔</span>
-        </IconButton>
-        <ThemeToggle />
-        <IconButton
-          label="Account"
-          onClick={account.open}
-          style={{
-            background: 'var(--info-soft)',
-            color: 'var(--info)',
-            fontWeight: 700,
-            border: 'none',
-          }}
-        >
-          {owner.initials}
-        </IconButton>
-      </Topbar>
+        <div className="admin-actions owner-actions" ref={profileRef}>
+          <IconButton
+            className="admin-ico"
+            label={unreadCount > 0 ? `View alerts, ${unreadCount} unread` : 'View alerts'}
+            onClick={alerts.open}
+          >
+            <Icon name="bell" />
+            {unreadCount > 0 && <span className="admin-badge owner-badge" aria-hidden="true">{unreadCount}</span>}
+          </IconButton>
+          <ThemeToggle className="admin-ico" />
+          
+          <div className={cn('owner-profile-cluster', showLogout && 'open')}>
+            <IconButton
+              className={cn('admin-ico admin-logout owner-rollout-logout', showLogout && 'visible')}
+              label="Sign Out"
+              to={paths.auth}
+              onClick={() => clearSession()}
+              tabIndex={showLogout ? 0 : -1}
+              aria-hidden={!showLogout}
+            >
+              <Icon name="logout" />
+            </IconButton>
 
-      <div className="shell wrap" style={{ maxWidth: 1280 }}>
-        <Sidebar links={OWNER_NAV_LINKS} label="Owner workspace" />
-        <main className="main" id="main" tabIndex={-1}>
-          <RouteErrorBoundary>
-            <Outlet />
-          </RouteErrorBoundary>
-        </main>
-      </div>
-
-      <Overlay
-        isOpen={notifications.isOpen}
-        onClose={notifications.close}
-        title="Notifications"
-        mode="drawer"
-      >
-        <div className="between" style={{ padding: '0 16px', marginTop: 12 }}>
-          <b style={{ fontSize: 18 }}>Notifications</b>
-          {unreadCount > 0 && (
-            <button type="button" className="btn btn-tertiary btn-sm" onClick={handleMarkAllRead}>
-              Mark all read
-            </button>
-          )}
-        </div>
-        <div className="stack-sm" style={{ marginTop: 12, padding: '0 16px' }}>
-          {notificationsList.length === 0 ? (
-            <div className="subtle center" style={{ padding: '40px 0' }}>
-              No notifications yet.
-            </div>
-          ) : (
-            notificationsList.map((item) => (
-              <div className="panel" key={item.id} style={{ opacity: item.isRead ? 0.6 : 1 }}>
-                <b>{item.title}</b>
-                <p className="small muted" style={{ margin: '2px 0 0' }}>
-                  {item.body}
-                </p>
-                <span className="tiny subtle">
-                  {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : ''}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-      </Overlay>
-
-      <Overlay isOpen={account.isOpen} onClose={account.close} title="Account" mode="sheet" showGrabber hideHeader>
-        <div className="row" style={{ marginBottom: 14 }}>
-          <span className="avatar lg b">{owner.initials}</span>
-          <div>
-            <b>{owner.name}</b>
-            <div className="subtle">
-              {owner.area} · {owner.email}
-            </div>
+            <IconButton
+              className={cn('admin-avatar owner-avatar', showLogout && 'active')}
+              label={showLogout ? 'Hide sign out button' : `Owner account (${owner.name}) — Click to sign out`}
+              onClick={() => setShowLogout((prev) => !prev)}
+              aria-expanded={showLogout}
+            >
+              {owner.initials}
+              <span className="admin-online owner-online" aria-hidden="true" />
+            </IconButton>
           </div>
         </div>
-        <div className="stack-sm">
-          <Button block to={paths.owner.venueSetup} onClick={account.close}>
-            Venue settings
-          </Button>
-          <Button block to={paths.player.home} onClick={account.close}>
-            ⚽ Switch to player workspace
-          </Button>
-          <Button variant="danger" block to={paths.auth} onClick={account.close} style={{ marginTop: 8 }}>
-            🚪 Sign Out / Change Role
-          </Button>
+      </Topbar>
+
+      <main className="admin-page-wrap owner-page-wrap" id="main" tabIndex={-1}>
+        <RouteErrorBoundary>
+          <Outlet />
+        </RouteErrorBoundary>
+      </main>
+
+      {/* Notifications / Alerts Drawer */}
+      <Overlay isOpen={alerts.isOpen} onClose={alerts.close} mode="drawer" hideHeader className="admin-alerts-modal owner-alerts-modal">
+        <div className="admin-alerts owner-alerts">
+          <div className="admin-alerts-head">
+            <div className="admin-alerts-title">
+              <span className="admin-alerts-bell">
+                <Icon name="bell" size={15} />
+              </span>
+              <h3>Venue alerts</h3>
+              {unreadCount > 0 && <span className="admin-alerts-count">{unreadCount} new</span>}
+            </div>
+            <div className="row" style={{ gap: 6 }}>
+              {unreadCount > 0 && (
+                <button className="admin-alerts-mark" type="button" onClick={markAllRead}>
+                  Mark all read
+                </button>
+              )}
+              <IconButton label="Close alerts" onClick={alerts.close}>
+                <Icon name="close" />
+              </IconButton>
+            </div>
+          </div>
+
+          {allRead ? (
+            <div className="admin-alerts-empty owner-alerts-empty">
+              <div className="admin-alerts-empty-icon owner-alerts-empty-icon">
+                <Icon name="check" size={26} />
+              </div>
+              <b>You&rsquo;re all caught up</b>
+              <span>No pending notifications or alerts for your turf right now.</span>
+            </div>
+          ) : (
+            <div className="admin-alerts-list owner-alerts-list">
+              {ownerAlerts.map((alert, index) => (
+                <button
+                  key={alert.id}
+                  type="button"
+                  className={cn('alert-item', 'tone-blue', alert.isRead && 'read')}
+                  style={{ animationDelay: `${index * 55}ms` }}
+                  onClick={() => markRead(alert.id)}
+                >
+                  <span className="alert-item-icon">
+                    <Icon name="alert" />
+                  </span>
+                  <span className="alert-item-body">
+                    <span className="alert-item-title">
+                      <b>{alert.title}</b>
+                    </span>
+                    <span className="alert-item-text">{alert.body}</span>
+                    <span className="alert-item-meta">
+                      {!alert.isRead && <span className="alert-item-dot" aria-hidden="true" />}
+                      {alert.createdAt ? new Date(alert.createdAt).toLocaleString() : ''}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-        <Button variant="tertiary" block onClick={account.close} style={{ marginTop: 10 }}>
-          Close
-        </Button>
       </Overlay>
     </>
-  );
-}
-
-/** Owner console shell: topbar + collapsible sidebar + main column. */
-export function OwnerLayout() {
-  return (
-    <SidebarProvider>
-      <OwnerChrome />
-    </SidebarProvider>
   );
 }

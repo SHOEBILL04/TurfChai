@@ -5,4 +5,14 @@ target
 *.log
 .idea
 .vscode
-frontend
+docs
+qa
+machine-learning
+frontend/node_modules
+frontend/dist
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/e2e/.artifacts
+frontend/e2e/.state
+frontend/qa/*.log

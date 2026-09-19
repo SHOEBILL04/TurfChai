@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { TableScroll } from '@/components/tables/TableScroll';
 import { Chip } from '@/components/ui/Chip';
-import { useFilterChips } from '@/hooks/useFilterChips';
 import { useToast } from '@/hooks/useToast';
 import { paths } from '@/routes/paths';
 import { listTurfRequests } from '@/api/turfRequests';
@@ -18,13 +17,10 @@ const FILTERS = [
 
 export default function TurfRequestsPage() {
   const { showToast } = useToast();
-  const chips = useFilterChips(['pending']);
+  const [activeFilter, setActiveFilter] = useState('pending');
   const [search, setSearch] = useState('');
   
-  const statusFilter = chips.isActive('pending') ? 'PENDING' : 
-                       chips.isActive('changes_requested') ? 'CHANGES_REQUESTED' : 
-                       chips.isActive('approved') ? 'APPROVED' : 
-                       chips.isActive('rejected') ? 'REJECTED' : null;
+  const statusFilter = activeFilter.toUpperCase();
 
   const { data: requestData, loading, error } = useApi(() => listTurfRequests(statusFilter), [statusFilter]);
 
@@ -59,8 +55,12 @@ export default function TurfRequestsPage() {
           </span>
         </div>
         <div className="row" style={{ gap: 8 }}>
+          {/* Pending count: only meaningful on the pending tab (rows are
+              already server-filtered by tab). Honest label either way. */}
           <span className="badge amber">
-            {Array.isArray(requestData) ? requestData.filter(r => r.status === 'PENDING' || !r.status).length : 0} Pending Approval
+            {activeFilter === 'pending'
+              ? `${rows.length} Pending Approval`
+              : `Viewing ${activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1)}`}
           </span>
         </div>
       </div>
@@ -70,8 +70,8 @@ export default function TurfRequestsPage() {
         {FILTERS.map((filter) => (
           <Chip
             key={filter.id}
-            active={chips.isActive(filter.id)}
-            onToggle={() => chips.toggle(filter.id)}
+            active={activeFilter === filter.id}
+            onToggle={() => setActiveFilter(filter.id)}
           >
             {filter.label}
           </Chip>
@@ -96,7 +96,8 @@ export default function TurfRequestsPage() {
               <th>Owner / Contact</th>
               <th>Area</th>
               <th>Docs Status</th>
-              <th>Wait Time</th>
+              <th>Submitted</th>
+              <th>Waiting</th>
               <th>Status</th>
               <th style={{ textAlign: 'right' }}>Action</th>
             </tr>
@@ -104,6 +105,9 @@ export default function TurfRequestsPage() {
           <tbody>
             {loading && <tr><td colSpan="8" className="center">Loading requests...</td></tr>}
             {error && <tr><td colSpan="8" className="center" style={{color:'var(--danger)'}}>Failed to load requests</td></tr>}
+            {!loading && !error && rows.length === 0 && (
+              <tr><td colSpan="8" className="center subtle">No {activeFilter} requests.</td></tr>
+            )}
             {rows.map((request) => (
               <tr key={request.id}>
                 <td className="num">
@@ -121,15 +125,32 @@ export default function TurfRequestsPage() {
                 </td>
                 <td>{request.area}</td>
                 <td>
-                  <span className={`badge nodot ${request.docTradeLicense === 'VERIFIED' && request.docOwnerNid === 'VERIFIED' && request.docUtilityBill === 'VERIFIED' ? 'green' : 'amber'}`}>
+                  <span
+                    className={`badge nodot ${request.docTradeLicense === 'VERIFIED' && request.docOwnerNid === 'VERIFIED' && request.docUtilityBill === 'VERIFIED' ? 'green' : 'amber'}`}
+                    title={`Trade license: ${request.docTradeLicense ?? '—'} · NID: ${request.docOwnerNid ?? '—'} · Utility bill: ${request.docUtilityBill ?? '—'}`}
+                  >
                     Docs
                   </span>
                 </td>
                 <td className="num">
                   {request.createdAt ? new Date(request.createdAt).toLocaleDateString() : '—'}
                 </td>
+                <td className="num" title={request.createdAt ? new Date(request.createdAt).toLocaleString() : undefined}>
+                  {/* Real wait time against the 48h SLA, not the submission date. */}
+                  {(() => {
+                    if (!request.createdAt) return '—';
+                    const hours = Math.floor((Date.now() - new Date(request.createdAt).getTime()) / 3600000);
+                    if (hours < 1) return '<1h';
+                    if (hours < 48) return `${hours}h`;
+                    return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ''}`;
+                  })()}
+                </td>
                 <td>
-                  <span className={`badge ${request.status === 'APPROVED' ? 'green' : request.status === 'REJECTED' ? 'red' : request.status === 'CHANGES_REQUESTED' ? 'blue' : 'amber'}`}>{request.status}</span>
+                  <span className={`badge ${request.status === 'APPROVED' ? 'green' : request.status === 'REJECTED' ? 'red' : request.status === 'CHANGES_REQUESTED' ? 'blue' : 'amber'}`}>
+                    {request.status === 'CHANGES_REQUESTED'
+                      ? 'Changes requested'
+                      : request.status?.charAt(0) + request.status?.slice(1).toLowerCase()}
+                  </span>
                 </td>
                 <td style={{ textAlign: 'right' }}>
                   {(request.status === 'PENDING' || request.status === 'CHANGES_REQUESTED') ? (

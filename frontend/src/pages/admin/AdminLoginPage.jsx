@@ -39,7 +39,6 @@ export default function AdminLoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [challenge, setChallenge] = useState('');
@@ -91,7 +90,7 @@ export default function AdminLoginPage() {
       setCode('');
       setDevCode(response.devCode || '');
       otpRefs.current[0]?.focus();
-      showToast('A new verification code was sent');
+      showToast('A new verification code was generated');
     } catch (error) {
       showToast(error?.message || 'Could not resend the code', { duration: 5000 });
     } finally {
@@ -263,16 +262,13 @@ export default function AdminLoginPage() {
                 </Field>
 
                 <div className="between" style={{ marginBottom: 22 }}>
-                  <label className="checkline" style={{ margin: 0, cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={remember}
-                      onChange={(event) => setRemember(event.target.checked)}
-                    />
-                    <span className="small">Remember device (30 days)</span>
-                  </label>
-                  <span className="small subtle" title="Self-service password reset isn't available yet — ask a super admin to reset your credentials.">
-                    Forgot password?
+                  <span className="small subtle" title="Remember-device is not implemented yet — you'll enter a code each sign-in.">
+                    Verification code every sign-in
+                  </span>
+                  {/* Self-service reset genuinely does not exist; a dead
+                      pseudo-link trained users to ignore affordances. */}
+                  <span className="small subtle">
+                    Forgot password? Ask a super admin to reset it.
                   </span>
                 </div>
 
@@ -287,6 +283,25 @@ export default function AdminLoginPage() {
                 >
                   {isSubmitting ? 'Checking…' : 'Continue →'}
                 </Button>
+
+                <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px dashed var(--border-soft)' }}>
+                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 8, fontWeight: 700 }}>
+                    DEMO ADMIN CREDENTIALS (Password: TurfChai@123)
+                  </span>
+                  <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                      onClick={() => {
+                        setEmail('nadia@turfchai.com');
+                        setPassword('TurfChai@123');
+                      }}
+                    >
+                      🛡️ Super Admin (Nadia)
+                    </button>
+                  </div>
+                </div>
               </form>
             )}
 
@@ -295,7 +310,7 @@ export default function AdminLoginPage() {
                 <div className="tc-otp-head">
                   <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Enter verification code</h2>
                   <p className="small" style={{ margin: '4px 0 0', color: 'var(--text-3)' }}>
-                    Check your email for the 6-digit code
+                    Demo mode — your code is shown below
                   </p>
                 </div>
 
@@ -311,7 +326,7 @@ export default function AdminLoginPage() {
                     }}
                   >
                     <span className="tiny subtle" style={{ display: 'block' }}>
-                      Development code (also emailed to the admin)
+                      Demo verification code
                     </span>
                     <b className="num" style={{ fontSize: 22, letterSpacing: 6, color: 'var(--green)' }}>
                       {devCode}

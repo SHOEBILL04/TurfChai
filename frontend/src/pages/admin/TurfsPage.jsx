@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { PageTitle } from '@/components/common/PageTitle';
 import { TableScroll } from '@/components/tables/TableScroll';
 import { Chip } from '@/components/ui/Chip';
-import { useFilterChips } from '@/hooks/useFilterChips';
+import { Button } from '@/components/buttons/Button';
 import { paths } from '@/routes/paths';
 import { listAdminVenues } from '@/api/adminVenues';
 import { useApi } from '@/hooks/useApi';
@@ -16,13 +16,12 @@ const FILTERS = [
 ];
 
 export default function TurfsPage() {
-  const chips = useFilterChips(['all']);
+  const [activeFilter, setActiveFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const activeChip = chips.active[0] || 'all';
 
-  const { data: res, loading } = useApi(
-    () => listAdminVenues(activeChip === 'all' ? null : activeChip),
-    [activeChip],
+  const { data: res, loading, error, reload } = useApi(
+    () => listAdminVenues(activeFilter === 'all' ? null : activeFilter),
+    [activeFilter],
   );
 
   const apiVenues = res?.data ?? res;
@@ -38,8 +37,6 @@ export default function TurfsPage() {
       phone: v.contactPhone || v.owner?.phone || '—',
       area: v.area || '—',
       rating: v.ratingAvg != null ? `${v.ratingAvg} ★` : '—',
-      // Not exposed by this endpoint; a placeholder figure here read as real.
-      revenue30d: '—',
       status: v.status || 'DRAFT',
       badgeClass: v.status === 'LIVE' ? 'green' : v.status === 'SUSPENDED' ? 'red' : 'amber',
       pitches: Array.isArray(v.pitches) ? v.pitches.length : null,
@@ -91,8 +88,8 @@ export default function TurfsPage() {
         {FILTERS.map((filter) => (
           <Chip
             key={filter.id}
-            active={chips.isActive(filter.id)}
-            onToggle={() => chips.toggle(filter.id)}
+            active={activeFilter === filter.id}
+            onToggle={() => setActiveFilter(filter.id)}
           >
             {filter.label}
           </Chip>
@@ -117,7 +114,6 @@ export default function TurfsPage() {
               <th>Owner / Contact</th>
               <th>Area</th>
               <th>Rating</th>
-              <th>30d Revenue</th>
               <th>Status</th>
               <th style={{ textAlign: 'right' }}>Action</th>
             </tr>
@@ -125,7 +121,22 @@ export default function TurfsPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', padding: 24 }}>Loading venues...</td>
+                <td colSpan={7} style={{ textAlign: 'center', padding: 24 }}>Loading venues...</td>
+              </tr>
+            ) : error ? (
+              <tr>
+                <td colSpan={7} style={{ textAlign: 'center', padding: 24 }}>
+                  Could not load venues.{' '}
+                  <Button size="sm" variant="secondary" style={{ marginLeft: 8 }} onClick={reload}>
+                    Try again
+                  </Button>
+                </td>
+              </tr>
+            ) : filteredVenues.length === 0 ? (
+              <tr>
+                <td colSpan={7} style={{ textAlign: 'center', padding: 24 }} className="subtle">
+                  {search ? `No venues match "${search}"` : 'No venues in this view.'}
+                </td>
               </tr>
             ) : filteredVenues.map((venue) => (
               <tr key={venue.id} style={venue.rowTone ? { background: venue.rowTone } : undefined}>
@@ -146,9 +157,12 @@ export default function TurfsPage() {
                 </td>
                 <td>{venue.area}</td>
                 <td className="num font-semibold">{venue.rating}</td>
-                <td className="num font-semibold">{venue.revenue30d}</td>
                 <td>
-                  <span className={`badge ${venue.badgeClass}`}>{venue.status}</span>
+                  <span className={`badge ${venue.badgeClass}`}>
+                    {venue.status === 'PENDING_LISTING'
+                      ? 'Pending listing'
+                      : venue.status.charAt(0) + venue.status.slice(1).toLowerCase()}
+                  </span>
                 </td>
                 <td style={{ textAlign: 'right' }}>
                   <Link

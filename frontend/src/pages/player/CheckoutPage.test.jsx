@@ -62,10 +62,18 @@ describe('CheckoutPage payment step', () => {
 
     renderApp(<CheckoutPage />, { route: '/player/checkout?slotId=1&venue=kick-off-arena' });
 
-    const pay = await screen.findByRole('button', { name: /pay|confirm/i }, { timeout: 3000 });
-    await userEvent.click(pay);
+    // Honest CTA: no payment is taken online, so the verb is confirm, not pay.
+    // Two Confirm buttons render (in-page CTA + mobile bar) — use the CTA's id.
+    const pay = await screen.findByRole('button', { name: /confirm booking/i }, { timeout: 3000 }).catch(() => null);
+    const cta = document.getElementById('pay-cta');
+    expect(cta).toBeTruthy();
+    // The policy acknowledgement ships unchecked now.
+    const policyTick = screen.getByRole('checkbox', { name: /i understand the cancellation policy/i });
+    expect(policyTick).not.toBeChecked();
+    await userEvent.click(policyTick);
+    await userEvent.click(cta ?? pay);
 
-    const confirm = await screen.findByRole('button', { name: /confirm booking/i });
+    const confirm = await screen.findByRole('button', { name: /confirm & reserve/i });
     await userEvent.click(confirm);
 
     await waitFor(() => {
@@ -76,10 +84,73 @@ describe('CheckoutPage payment step', () => {
       const body = JSON.parse(posted[1].body);
       expect(Number(body.slotId)).toBe(1);
       expect(body.method).toBeTruthy();
+      expect(body.bookingMode).toBe('FULL');
       // No credential ever leaves the browser, because none is collected.
       expect(Object.keys(body)).not.toContain('cardNumber');
       expect(Object.keys(body)).not.toContain('cvv');
       expect(Object.keys(body)).not.toContain('pin');
+    });
+  });
+
+  it('allows selecting squad split and calculates host share due', async () => {
+    const fetchMock = mountCheckout([
+      [
+        '/api/v1/payments/checkout',
+        {
+          body: {
+            data: { status: 'SUCCESS', bookingId: 42, bookingCode: 'TC-ABC123', pointsEarned: 5 },
+          },
+        },
+      ],
+      ['/api/v1/bookings/42', { body: { id: 42, bookingCode: 'TC-ABC123', venueName: 'Kick Off Arena' } }],
+    ]);
+
+    renderApp(<CheckoutPage />, { route: '/player/checkout?slotId=1&venue=kick-off-arena' });
+
+    // Select "Split with friends"
+    const splitModeBtn = await screen.findByRole('button', { name: /split with friends/i });
+    await userEvent.click(splitModeBtn);
+
+    // Verify per person breakdown is displayed (2000 / 5 = 400)
+    expect(await screen.findByText(/per person/i)).toBeTruthy();
+
+    const policyTick = screen.getByRole('checkbox', { name: /i understand the cancellation policy/i });
+    await userEvent.click(policyTick);
+    await userEvent.click(document.getElementById('pay-cta'));
+
+    const confirm = await screen.findByRole('button', { name: /confirm & reserve/i });
+    await userEvent.click(confirm);
+
+    await waitFor(() => {
+      const posted = fetchMock.mock.calls.find(([url]) =>
+        String(url).includes('/api/v1/payments/checkout'),
+      );
+      expect(posted).toBeTruthy();
+      const body = JSON.parse(posted[1].body);
+      expect(body.bookingMode).toBe('SPLIT');
+      expect(body.splitPlayerCount).toBe(5);
+    });
+  });
+
+  it('releases hold and cancels booking process when the cancel control is clicked', async () => {
+    const fetchMock = mountCheckout([
+      ['/api/v1/bookings/release-hold', { body: {} }],
+    ]);
+
+    renderApp(<CheckoutPage />, { route: '/player/checkout?slotId=1&venue=kick-off-arena' });
+
+    const cancelButtons = await screen.findAllByRole('button', { name: /cancel & release this slot/i });
+    expect(cancelButtons.length).toBeGreaterThan(0);
+
+    await userEvent.click(cancelButtons[0]);
+
+    await waitFor(() => {
+      const releaseCall = fetchMock.mock.calls.find(([url]) =>
+        String(url).includes('/api/v1/bookings/release-hold'),
+      );
+      expect(releaseCall).toBeTruthy();
+      const body = JSON.parse(releaseCall[1].body);
+      expect(Number(body.slotId)).toBe(1);
     });
   });
 });

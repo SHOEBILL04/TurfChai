@@ -1,4 +1,5 @@
-import { Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState, useRef } from 'react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Brand } from '@/components/common/Brand';
 import { Icon } from '@/components/common/Icon';
 import { RouteErrorBoundary } from '@/components/common/RouteErrorBoundary';
@@ -8,6 +9,7 @@ import { ThemeToggle } from '@/components/buttons/ThemeToggle';
 import { BottomNav } from '@/components/navigation/BottomNav';
 import { Topbar } from '@/components/navigation/Topbar';
 import { Overlay } from '@/components/modals/Overlay';
+import { HeldSlotBanner } from '@/components/booking/HeldSlotBanner';
 import { Avatar } from '@/components/ui/Avatar';
 import { Badge } from '@/components/ui/Badge';
 import { Panel } from '@/components/ui/Panel';
@@ -21,6 +23,7 @@ import { useBodyClass } from '@/hooks/useBodyClass';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useSession } from '@/hooks/useSession';
 import { useToast } from '@/hooks/useToast';
+import { cn } from '@/utils/cn';
 import { toUserMessage } from '@/utils/errorMessage';
 import { paths } from '@/routes/paths';
 
@@ -32,15 +35,57 @@ export function PlayerLayout({ withFooter = false }) {
   const notifications = useDisclosure(false);
   const profile = useDisclosure(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { showToast } = useToast();
   useBodyClass('has-bottomnav');
+
+  const isProfilePage =
+    location.pathname === paths.player.settings ||
+    location.pathname.startsWith('/player/dashboard') ||
+    location.pathname.includes('/settings');
+
+  const [manuallyToggled, setManuallyToggled] = useState(null);
+  const [prevPathname, setPrevPathname] = useState(location.pathname);
+  const profileRef = useRef(null);
+
+  // Automatically roll out when on profile/dashboard page unless manually toggled
+  const isRolloutVisible = manuallyToggled !== null ? manuallyToggled : isProfilePage;
+
+  // Reset manual toggle on route changes so entering dashboard always auto rolls out
+  if (prevPathname !== location.pathname) {
+    setPrevPathname(location.pathname);
+    setManuallyToggled(null);
+  }
+
+  useEffect(() => {
+    if (!isRolloutVisible) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setManuallyToggled(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isRolloutVisible]);
 
   // The shell renders on public routes too. Anything that identifies the
   // caller must stay unfetched until there is a real session, otherwise a
   // signed-out visitor either sees somebody else's identity or gets bounced
   // by the 401 handler while browsing a public page.
-  const { signedIn, user: player, loading: profileLoading, error: profileError, reload: reloadProfile } =
+  const { signedIn, role, user: player, loading: profileLoading, error: profileError, reload: reloadProfile } =
     useSession();
+
+  const isOwnerOrAdmin = signedIn && (role === 'OWNER' || role === 'ADMIN' || role === 'SUPER_ADMIN');
+
+  const handleExitPlayerView = () => {
+    if (location.state?.returnTo) {
+      navigate(location.state.returnTo);
+    } else if (role === 'ADMIN' || role === 'SUPER_ADMIN') {
+      navigate(paths.admin.dashboard);
+    } else {
+      navigate(paths.owner.venueSetup);
+    }
+  };
 
   const { data: notifData, reload: reloadNotifs } = useApi(
     () => (signedIn ? getNotifications() : Promise.resolve([])),
@@ -95,54 +140,159 @@ export function PlayerLayout({ withFooter = false }) {
           .map((part) => part[0]?.toUpperCase())
           .join('') || '·';
 
+  const handleProfileClick = () => {
+    if (isProfilePage) {
+      setManuallyToggled(!isRolloutVisible);
+    } else {
+      navigate(paths.player.dashboard.settings);
+    }
+  };
+
   const signOut = () => {
     clearSession();
     profile.close();
     navigate(paths.auth);
   };
 
+  const brandTo = !signedIn
+    ? paths.landing
+    : isOwnerOrAdmin
+      ? role === 'OWNER'
+        ? paths.owner.dashboard
+        : paths.admin.dashboard
+      : paths.player.home;
+
   return (
     <>
-      <Topbar brand={<Brand to={paths.player.home} />} links={PLAYER_NAV_LINKS}>
-        <ThemeToggle />
-        <IconButton
-          label={`Notifications, ${unreadCount} unread`}
-          notify={unreadCount > 0}
-          onClick={notifications.open}
-        >
-          <span aria-hidden="true">🔔</span>
-        </IconButton>
-        <IconButton
-          label="Profile menu"
-          onClick={profile.open}
-          style={{
-            background: 'var(--brand-soft)',
-            color: 'var(--brand-600)',
-            fontWeight: 700,
-            border: 'none',
-          }}
-        >
-          {initials}
-        </IconButton>
+      <HeldSlotBanner />
+      <Topbar
+        className="admin-topbar owner-topbar player-topbar"
+        brand={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Brand to={brandTo} />
+            {isOwnerOrAdmin && (
+              <Badge tone="green" dot={false} style={{ fontSize: 11, fontWeight: 700 }}>
+                👀 Turf Preview Mode
+              </Badge>
+            )}
+          </div>
+        }
+        links={isOwnerOrAdmin ? [] : PLAYER_NAV_LINKS}
+      >
+        <div className="admin-actions owner-actions player-actions">
+          {isOwnerOrAdmin ? (
+            <>
+              <button
+                type="button"
+                onClick={handleExitPlayerView}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  fontWeight: 700,
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  borderRadius: 9999,
+                  padding: '4px 10px',
+                  fontSize: 11.5,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  transition: 'all 0.15s ease',
+                  height: 34,
+                  boxSizing: 'border-box',
+                }}
+                title="Exit Player View and return to Owner portal"
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.22)';
+                  e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.6)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)';
+                  e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+                }}
+              >
+                <span style={{ fontSize: 10, fontWeight: 900 }}>✕</span>
+                <span>Exit Player View</span>
+              </button>
+              <ThemeToggle className="admin-ico" />
+            </>
+          ) : (
+            <>
+              {signedIn && (
+                <IconButton
+                  className="admin-ico"
+                  label={`Notifications, ${unreadCount} unread`}
+                  onClick={notifications.open}
+                >
+                  <Icon name="bell" />
+                  {unreadCount > 0 && <span className="admin-badge owner-badge player-badge">{unreadCount}</span>}
+                </IconButton>
+              )}
+              <ThemeToggle className="admin-ico" />
+              {signedIn ? (
+                <div className={cn('owner-profile-cluster player-profile-cluster', isRolloutVisible && 'open')} ref={profileRef}>
+                  <IconButton
+                    className={cn('admin-ico admin-logout owner-rollout-logout player-rollout-logout', isRolloutVisible && 'visible')}
+                    label="Sign Out"
+                    to={paths.auth}
+                    onClick={() => signOut()}
+                    tabIndex={isRolloutVisible ? 0 : -1}
+                    aria-hidden={!isRolloutVisible}
+                  >
+                    <Icon name="logout" />
+                  </IconButton>
+
+                  <IconButton
+                    className={cn('admin-avatar owner-avatar player-avatar', (isRolloutVisible || isProfilePage) && 'active')}
+                    label={
+                      isProfilePage
+                        ? isRolloutVisible
+                          ? 'Hide sign out button'
+                          : `Player account (${fullName}) — Click to sign out`
+                        : `Player account (${fullName}) — Go to profile dashboard`
+                    }
+                    onClick={handleProfileClick}
+                    aria-expanded={isRolloutVisible}
+                  >
+                    {initials}
+                    <span className="admin-online owner-online player-online" aria-hidden="true" />
+                  </IconButton>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  to={paths.auth}
+                  variant="primary"
+                  style={{ height: 34, borderRadius: 999, padding: '0 14px', fontSize: 13 }}
+                >
+                  Sign In
+                </Button>
+              )}
+            </>
+          )}
+        </div>
       </Topbar>
 
       <RouteErrorBoundary>
         <Outlet />
       </RouteErrorBoundary>
 
-      {withFooter ? <SiteFooter /> : null}
+      {withFooter && !isOwnerOrAdmin ? <SiteFooter /> : null}
 
-      <BottomNav
-        links={PLAYER_BOTTOM_NAV}
-        trailing={
-          <button type="button" onClick={profile.open}>
-            <span className="ico" aria-hidden="true">
-              <Icon name="profile" />
-            </span>
-            Profile
-          </button>
-        }
-      />
+      {!isOwnerOrAdmin && (
+        <BottomNav
+          links={PLAYER_BOTTOM_NAV}
+          trailing={
+            <button type="button" onClick={() => navigate(paths.player.settings)}>
+              <span className="ico" aria-hidden="true">
+                <Icon name="profile" />
+              </span>
+              Profile
+            </button>
+          }
+        />
+      )}
 
       <Overlay
         isOpen={notifications.isOpen}

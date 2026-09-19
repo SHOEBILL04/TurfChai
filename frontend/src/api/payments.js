@@ -11,10 +11,10 @@ import { api } from './client';
  * POST /api/v1/payments/checkout — pays for the caller's currently held
  * slot (mock bKash/Nagad/Card/Cash).
  */
-export async function checkout({ slotId, method, applyWalletAmount, promoCode }) {
+export async function checkout(payload) {
   const res = await api('/payments/checkout', {
     method: 'POST',
-    body: { slotId, method, applyWalletAmount, promoCode },
+    body: payload,
   });
   return res.data;
 }
@@ -30,6 +30,15 @@ export async function validatePromoCode({ code, orderTotal, venueId }) {
     method: 'POST',
     body: { code, orderTotal, venueId },
   });
+}
+
+/**
+ * GET /api/v1/venues/{venueId}/promotions/available — every promo code
+ * currently redeemable at a venue, for the checkout page's "browse codes"
+ * list. Public, no auth — same as venue/slot browsing.
+ */
+export function getAvailablePromoCodes(venueId) {
+  return api(`/venues/${encodeURIComponent(venueId)}/promotions/available`, { token: false });
 }
 
 /** GET /api/v1/payments/booking/{bookingId} — a booking's payment history, most recent first. */

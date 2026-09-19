@@ -43,6 +43,10 @@ class VenueSearchServiceTest {
         private com.turfchai.booking.repository.BookingRepository bookings;
         @Autowired
         private com.turfchai.repository.ReviewRepository reviews;
+        @Autowired
+        private com.turfchai.repository.OpenGameRepository openGames;
+        @Autowired
+        private com.turfchai.repository.OpenGameMembershipRepository openGameMembers;
 
         private Sport football;
         private Sport badminton;
@@ -54,6 +58,8 @@ class VenueSearchServiceTest {
                 // the rows it points at.
                 reviews.deleteAll();
                 tournaments.deleteAll();
+                openGameMembers.deleteAll();
+                openGames.deleteAll();
                 bookings.deleteAll();
                 slots.deleteAll();
                 venues.deleteAll();
@@ -109,6 +115,19 @@ class VenueSearchServiceTest {
                 VenueSearchCriteria byName = new VenueSearchCriteria(
                                 "gamma", null, null, null, null, null, null, null, null, null, null);
                 assertThat(service.search(byName, 0, 10, "rating").items())
+                                .extracting(v -> v.slug()).containsExactly("gamma-court");
+
+                VenueSearchCriteria byArea = new VenueSearchCriteria(
+                                "Mirpur", null, null, null, null, null, null, null, null, null, null);
+                assertThat(service.search(byArea, 0, 10, "rating").items())
+                                .extracting(v -> v.slug()).containsExactly("beta-turf");
+        }
+
+        @Test
+        void freeTextQueryMatchesSportName() {
+                VenueSearchCriteria bySport = new VenueSearchCriteria(
+                                "badminton", null, null, null, null, null, null, null, null, null, null);
+                assertThat(service.search(bySport, 0, 10, "rating").items())
                                 .extracting(v -> v.slug()).containsExactly("gamma-court");
         }
 

@@ -1,4 +1,5 @@
-import { api } from './client';
+import { api, apiDownload } from './client';
+import { downloadBlob } from '@/utils/deviceActions';
 
 /**
  * Booking engine endpoints. All routes live under /api/v1/bookings/** and
@@ -19,6 +20,20 @@ export function holdSlot(slotId) {
   return api('/bookings/hold-slot', { method: 'POST', body: { slotId } });
 }
 
+/** POST /api/v1/bookings/release-hold — releases an active hold immediately. */
+export function releaseHold(slotId) {
+  return api('/bookings/release-hold', { method: 'POST', body: { slotId } });
+}
+
+/**
+ * GET /api/v1/bookings/active-hold — the caller's currently held slot, if
+ * any. Resolves to `{}` (no `slotId`) rather than rejecting when nothing is
+ * held, so callers can treat "no hold" as data, not an error branch.
+ */
+export function getActiveHold() {
+  return api('/bookings/active-hold');
+}
+
 /** GET /api/v1/bookings/{id} — booking detail for the owner/admin. */
 export function getBooking(id) {
   return api(`/bookings/${encodeURIComponent(id)}`);
@@ -27,6 +42,19 @@ export function getBooking(id) {
 /** GET /api/v1/bookings — every booking belonging to the caller. */
 export function listBookings() {
   return api('/bookings');
+}
+
+/** GET /api/v1/bookings/{id}/pdf — a booking's PDF receipt/ticket. */
+export function getBookingPdf(id) {
+  return apiDownload(`/bookings/${encodeURIComponent(id)}/pdf`);
+}
+
+/**
+ * Fetches a booking's PDF and saves it to disk — the "Download PDF" action.
+ */
+export async function downloadBookingPdf(booking) {
+  const blob = await getBookingPdf(booking.id);
+  downloadBlob(`turfchai-${booking.bookingCode || booking.id}.pdf`, blob);
 }
 
 /** POST /api/v1/matchday/checkin?bookingId={id} — records the gate check-in. */

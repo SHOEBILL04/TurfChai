@@ -1,11 +1,19 @@
 package com.turfchai.booking.api;
 
+import com.turfchai.booking.dto.request.BookingSplitRequest;
 import com.turfchai.booking.dto.request.HoldSlotRequest;
+import com.turfchai.booking.dto.request.SharePaymentRequest;
 import com.turfchai.booking.dto.response.BookingResponse;
+import com.turfchai.booking.dto.response.BookingSplitResponse;
+import com.turfchai.booking.dto.response.ShareDetailsResponse;
 import com.turfchai.booking.entity.Booking;
 import com.turfchai.booking.repository.SlotRepository;
+import com.turfchai.booking.service.BookingPdfService;
 import com.turfchai.booking.service.BookingService;
+import com.turfchai.booking.service.BookingSplitService;
+import com.turfchai.payment.service.PaymentService;
 import com.turfchai.security.UserPrincipal;
+import com.turfchai.venue.repository.VenueRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
@@ -13,6 +21,9 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -44,6 +55,10 @@ public class BookingRestController {
 
     private final BookingService bookingService;
     private final SlotRepository slotRepository;
+    private final VenueRepository venueRepository;
+    private final PaymentService paymentService;
+    private final BookingPdfService bookingPdfService;
+    private final BookingSplitService bookingSplitService;
 
     /**
      * Acquires a 5-minute hold on a slot. The response is enriched with the
@@ -77,6 +92,56 @@ public class BookingRestController {
             body.put("endTime", slot.getEndTime());
         });
         return ResponseEntity.ok(body);
+    }
+
+    /**
+     * The caller's currently active hold, if any — the frontend polls this to
+     * show a persistent "you have a slot on hold" prompt anywhere in the app,
+     * not just on the checkout page itself, and to link straight back to it.
+     * Returns an empty body (no {@code slotId}) rather than 404 when there is
+     * no active hold, since "nothing held" is the normal case, not an error.
+     */
+    @Operation(summary = "Get the caller's active hold", description = "Returns the slot the caller currently has on hold, if any.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "The active hold, or an empty object if none"),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid JWT")
+    })
+    @GetMapping("/active-hold")
+    public ResponseEntity<Map<String, Object>> getActiveHold(Authentication authentication) {
+        Map<String, Object> body = new HashMap<>();
+        bookingService.getActiveHold(currentUserId(authentication)).ifPresent(slot -> {
+            body.put("slotId", slot.getId());
+            body.put("heldUntil", slot.getHoldExpiresAt());
+            body.put("price", slot.getPrice());
+            body.put("venueId", slot.getVenueId());
+            body.put("venueSlug", slot.getVenueId() == null ? null : venueRepository.findById(slot.getVenueId())
+                    .map(venue -> venue.getSlug())
+                    .orElse(null));
+            body.put("pitchId", slot.getPitch() != null ? slot.getPitch().getId() : null);
+            body.put("pitchName", slot.getPitch() != null ? slot.getPitch().getName() : null);
+            body.put("slotDate", slot.getSlotDate());
+            body.put("startTime", slot.getStartTime());
+            body.put("endTime", slot.getEndTime());
+        });
+        return ResponseEntity.ok(body);
+    }
+
+    /**
+     * Releases an active hold owned by the caller so the slot is immediately
+     * bookable again and no longer holds up the player's session.
+     */
+    @Operation(summary = "Release a slot hold", description = "Releases the caller's active hold on the given slot immediately.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Hold released"),
+            @ApiResponse(responseCode = "400", description = "Validation failed (missing slotId)"),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid JWT")
+    })
+    @PostMapping("/release-hold")
+    public ResponseEntity<Void> releaseHold(
+            Authentication authentication,
+            @Valid @RequestBody HoldSlotRequest request) {
+        bookingService.releaseHold(currentUserId(authentication), request.getSlotId());
+        return ResponseEntity.ok().build();
     }
 
     /**
@@ -133,6 +198,34 @@ public class BookingRestController {
                 .ok(bookingService.toResponse(bookingService.getBooking(currentUserId(authentication), id)));
     }
 
+    /**
+     * A downloadable PDF receipt/ticket for one booking: match details, price
+     * breakdown, transaction history, and a QR that deep-links back to the
+     * booking — built from the same data {@link #getBooking} and the payments
+     * endpoint already return, so it can never show something the in-app
+     * pages don't already agree on.
+     */
+    @Operation(summary = "Download a booking as PDF", description = "Returns a PDF receipt/ticket for a booking owned by the caller, or accessible to an admin/owner role.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "PDF file"),
+            @ApiResponse(responseCode = "400", description = "Invalid booking id in path"),
+            @ApiResponse(responseCode = "401", description = "Missing or invalid JWT"),
+            @ApiResponse(responseCode = "409", description = "Booking not found or caller is not allowed to view it")
+    })
+    @GetMapping("/{id}/pdf")
+    public ResponseEntity<byte[]> downloadBookingPdf(Authentication authentication, @PathVariable Long id) {
+        Long userId = currentUserId(authentication);
+        BookingResponse booking = bookingService.toResponse(bookingService.getBooking(userId, id));
+        byte[] pdf = bookingPdfService.generate(booking, paymentService.getPaymentsForBooking(userId, id));
+
+        String filename = "turfchai-" + (booking.getBookingCode() != null ? booking.getBookingCode() : id) + ".pdf";
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(filename).build().toString())
+                .body(pdf);
+    }
+
     @Operation(summary = "List the caller's bookings", description = "Returns all bookings belonging to the authenticated user.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "List of the caller's bookings"),
@@ -145,6 +238,41 @@ public class BookingRestController {
                 .map(bookingService::toResponse)
                 .toList();
         return ResponseEntity.ok(bookings);
+    }
+
+    @Operation(summary = "Enable or reconfigure price split for a booking", description = "Divides the booking price equally among the given number of players and generates share tokens.")
+    @PostMapping("/{id}/split")
+    public ResponseEntity<BookingSplitResponse> enableSplit(
+            Authentication authentication,
+            @PathVariable Long id,
+            @Valid @RequestBody BookingSplitRequest request) {
+        BookingSplitResponse response = bookingSplitService.enableSplit(id, request, currentUserId(authentication));
+        return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "Get split payment status for a booking", description = "Returns the list of members, payment status, and share tokens for a split booking.")
+    @GetMapping("/{id}/split")
+    public ResponseEntity<BookingSplitResponse> getSplitStatus(
+            Authentication authentication,
+            @PathVariable Long id) {
+        BookingSplitResponse response = bookingSplitService.getSplitStatus(id, currentUserId(authentication));
+        return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "Get share details by public share token", description = "Public endpoint to load booking and share summary for the pay-share QR/link landing page.")
+    @GetMapping("/share/{token}")
+    public ResponseEntity<ShareDetailsResponse> getShareDetails(@PathVariable String token) {
+        ShareDetailsResponse response = bookingSplitService.getShareDetails(token);
+        return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "Complete payment for a single share", description = "Public endpoint to mark a friend's share as paid via the share token.")
+    @PostMapping("/share/{token}/pay")
+    public ResponseEntity<ShareDetailsResponse> completeSharePayment(
+            @PathVariable String token,
+            @Valid @RequestBody SharePaymentRequest request) {
+        ShareDetailsResponse response = bookingSplitService.completeSharePayment(token, request);
+        return ResponseEntity.ok(response);
     }
 
     private Long currentUserId(Authentication authentication) {

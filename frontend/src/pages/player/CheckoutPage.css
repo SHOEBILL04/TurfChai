@@ -12,6 +12,64 @@
     }
 }
 
+/* ponytail: phones get the total + CTA pinned above the fold instead of
+   below all three steps. Ceiling: collapsible sticky summary sheet. */
+@media(max-width:900px) {
+    .co-summary {
+        position: static;
+    }
+
+    .co-mobile-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 60;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+        background: var(--glass-bg-strong);
+        -webkit-backdrop-filter: blur(16px);
+        backdrop-filter: blur(16px);
+        border-top: 1px solid var(--glass-border);
+        box-shadow: 0 -6px 24px rgba(10, 30, 20, .12);
+    }
+
+    .co-mobile-bar .co-mobile-total {
+        display: flex;
+        flex-direction: column;
+        flex: none;
+    }
+
+    .co-mobile-bar .co-mobile-total .lbl {
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+        color: var(--text-3);
+    }
+
+    .co-mobile-bar .co-mobile-total .val {
+        font-size: 17px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .co-mobile-bar .btn {
+        flex: 1;
+    }
+
+    /* The in-page CTA duplicates the bar's job on phones — hide it, keep the bar. */
+    .co-mobile-hide {
+        display: none;
+    }
+
+    .wrap:has(.co-mobile-bar) {
+        padding-bottom: 96px;
+    }
+}
+
 /* ── Steps (borderless sections) ── */
 .co-step {
     margin-bottom: 36px
@@ -150,6 +208,12 @@
 .method:has(input:checked) {
     background: var(--brand-soft);
     box-shadow: 0 0 0 1.5px var(--brand), 0 2px 12px rgba(0, 0, 0, .06);
+}
+
+/* Keyboard users had no visible indication while tabbing methods. */
+.method:has(input:focus-visible) {
+    outline: 2px solid var(--brand-600);
+    outline-offset: 2px;
 }
 
 [data-theme="dark"] .method:has(input:checked) {
@@ -547,4 +611,235 @@
     gap: 9px;
     margin-top: 18px;
     text-align: left;
+}
+
+/* ── Promo code suggestions dropdown ── */
+.promo-suggest {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 5;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-md);
+    padding: 6px;
+}
+
+.promo-suggest-empty {
+    padding: 10px 8px;
+    font-size: 12.5px;
+    color: var(--text-3);
+    text-align: center;
+}
+
+.promo-suggest-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 10px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+}
+
+.promo-suggest-item:hover,
+.promo-suggest-item:focus-visible {
+    background: var(--surface-2);
+}
+
+.promo-suggest-code {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: 0.02em;
+}
+
+.promo-suggest-label {
+    font-size: 12px;
+    color: var(--text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Booking Mode Selector Cards ── */
+.booking-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.booking-mode-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 16px;
+    border-radius: 14px;
+    cursor: pointer;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    color: var(--text);
+    font-family: inherit;
+    text-align: left;
+    transition: all .18s ease;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .05);
+    position: relative;
+    width: 100%;
+}
+
+[data-theme="dark"] .booking-mode-card {
+    background: var(--surface);
+    border-color: var(--border);
+    box-shadow: 0 3px 14px rgba(0, 0, 0, .28);
+    color: var(--text);
+}
+
+.booking-mode-card:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .08);
+}
+
+[data-theme="dark"] .booking-mode-card:hover {
+    box-shadow: 0 4px 18px rgba(0, 0, 0, .35);
+}
+
+.booking-mode-card.selected {
+    background: var(--brand-soft);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 1px var(--brand), 0 3px 14px rgba(34, 197, 94, .12);
+}
+
+[data-theme="dark"] .booking-mode-card.selected {
+    background: rgba(34, 197, 94, 0.09);
+    border-color: var(--brand);
+    box-shadow: 0 0 0 1px var(--brand), 0 3px 16px rgba(34, 197, 94, .18);
+}
+
+.booking-mode-icon {
+    font-size: 22px;
+    margin-bottom: 8px;
+    display: inline-block;
+}
+
+.booking-mode-title {
+    font-size: 14.5px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+}
+
+[data-theme="dark"] .booking-mode-title {
+    color: var(--text);
+}
+
+.booking-mode-desc {
+    font-size: 12.5px;
+    color: var(--text-3);
+    line-height: 1.45;
+}
+
+[data-theme="dark"] .booking-mode-desc {
+    color: var(--text-3);
+}
+
+/* ── Mode Config Card Container ── */
+.booking-mode-config-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin-top: 14px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .04);
+}
+
+[data-theme="dark"] .booking-mode-config-box {
+    background: var(--surface);
+    box-shadow: 0 3px 14px rgba(0, 0, 0, .25);
+}
+
+.booking-mode-calc-badge {
+    padding: 12px 16px;
+    border-radius: 10px;
+    background: var(--brand-soft);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    color: var(--text);
+    font-size: 13.5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+[data-theme="dark"] .booking-mode-calc-badge {
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--text);
+}
+
+/* ── Spot Allocation Bar & Summary ── */
+.spot-allocation-bar {
+    display: flex;
+    height: 10px;
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 12px 0 10px;
+    background: var(--surface-2, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--border);
+}
+
+.spot-bar-group {
+    background: var(--brand);
+    transition: width 0.3s ease;
+}
+
+.spot-bar-public {
+    background: #3b82f6;
+    transition: width 0.3s ease;
+}
+
+.spot-summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+@media(max-width:540px) {
+    .spot-summary-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.spot-summary-card {
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+
+[data-theme="dark"] .spot-summary-card {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.spot-summary-card.group {
+    border-color: rgba(34, 197, 94, 0.3);
+    background: rgba(34, 197, 94, 0.05);
+}
+
+.spot-summary-card.public {
+    border-color: rgba(59, 130, 246, 0.3);
+    background: rgba(59, 130, 246, 0.05);
 }

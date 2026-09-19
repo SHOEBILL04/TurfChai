@@ -47,7 +47,7 @@ import java.util.UUID;
  */
 @Slf4j
 @Component
-@Profile({ "dev", "test", "ci" })
+@Profile({ "dev", "test", "ci", "docker" })
 @Order(10)
 @RequiredArgsConstructor
 public class AdminDemoDataSeeder implements CommandLineRunner {
@@ -80,6 +80,19 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
     private static final String[] AREAS = {
             "Mirpur", "Gulshan", "Dhanmondi", "Banani", "Mohammadpur",
             "Uttara", "Badda", "Rampura", "Wari", "Khilgaon"
+    };
+
+    private static final String[] VENUE_PHOTO_URLS = {
+            "https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800&q=80",
+            "https://images.unsplash.com/photo-1529900748604-07564a03e7a6?w=800&q=80",
+            "https://images.unsplash.com/photo-1541534741688-6078c6bfb5c5?w=800&q=80",
+            "https://images.unsplash.com/photo-1551958219-acbc608c6377?w=800&q=80",
+            "https://images.unsplash.com/photo-1575361204480-aadea25e6e68?w=800&q=80",
+            "https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=800&q=80",
+            "https://images.unsplash.com/photo-1459865264687-595d652de67e?w=800&q=80",
+            "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800&q=80",
+            "https://images.unsplash.com/photo-1526232761682-d26e03ac148e?w=800&q=80",
+            "https://images.unsplash.com/photo-1577223625816-7546f13df25d?w=800&q=80"
     };
 
     /**
@@ -193,7 +206,7 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
 
     private List<User> seedUsers() {
         List<User> allUsers = new ArrayList<>();
-        String hash = passwordEncoder.encode("Demo@12345");
+        String hash = passwordEncoder.encode("TurfChai@123");
 
         // Monthly distribution: spread createdAt across past 6 months
         // month offsets (0 = current month), counts per month
@@ -243,7 +256,7 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
             allUsers.add(u);
         }
 
-        // 4 ADMINs + 1 SUPER_ADMIN
+        // 4 ADMINs (Super Admin is managed by AdminDataSeeder)
         String[] adminNames = { "Nadia Amin", "Farid Hasan", "Arman Habib", "Riya Sarkar" };
         for (int i = 0; i < 4; i++) {
             allUsers.add(User.builder()
@@ -257,23 +270,6 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
                     .avatarInitials(initials(adminNames[i]))
                     .reliabilityScore(100)
                     .createdAt(OffsetDateTime.now().minusMonths(6).minusDays(RNG.nextInt(10)))
-                    .updatedAt(OffsetDateTime.now())
-                    .build());
-        }
-        boolean hasSuperAdmin = allUsers.stream().anyMatch(u -> u.getRole() == RoleType.SUPER_ADMIN)
-                || userRepository.findAll().stream().anyMatch(u -> u.getRole() == RoleType.SUPER_ADMIN);
-        if (!hasSuperAdmin) {
-            allUsers.add(User.builder()
-                    .fullName("Super Admin")
-                    .email("superadmin@turfchai.com")
-                    .phone("+8801800000099")
-                    .passwordHash(hash)
-                    .role(RoleType.SUPER_ADMIN)
-                    .status("ACTIVE")
-                    .area("Dhaka")
-                    .avatarInitials("SA")
-                    .reliabilityScore(100)
-                    .createdAt(OffsetDateTime.now().minusMonths(7))
                     .updatedAt(OffsetDateTime.now())
                     .build());
         }
@@ -359,6 +355,7 @@ public class AdminDemoDataSeeder implements CommandLineRunner {
                     .tournamentReady(i % 5 == 0)
                     .hasPromotion(i % 7 == 0)
                     .promotionLabel(i % 7 == 0 ? "Buy 5 get 1 free" : null)
+                    .photos(VENUE_PHOTO_URLS[i % VENUE_PHOTO_URLS.length] + "," + VENUE_PHOTO_URLS[(i + 1) % VENUE_PHOTO_URLS.length])
                     .amenities("floodlights,parking,changing_room,water,first_aid")
                     .openTime(LocalTime.of(6, 0))
                     .closeTime(LocalTime.of(23, 0))

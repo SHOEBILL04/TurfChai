@@ -12,6 +12,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -103,6 +104,37 @@ public class Booking {
     @Column(name = "discount_amount")
     @Builder.Default
     private BigDecimal discountAmount = BigDecimal.ZERO;
+
+    @Column(name = "source", length = 20)
+    @Builder.Default
+    private String source = "ONLINE";
+
+    @Column(name = "guest_name", length = 100)
+    private String guestName;
+
+    @Column(name = "guest_phone", length = 30)
+    private String guestPhone;
+
+    @Column(name = "split_enabled", nullable = false)
+    @Builder.Default
+    private Boolean splitEnabled = false;
+
+    @Column(name = "split_deadline")
+    private OffsetDateTime splitDeadline;
+
+    @Column(name = "split_total_paid")
+    @Builder.Default
+    private BigDecimal splitTotalPaid = BigDecimal.ZERO;
+
+    @Column(name = "split_remaining")
+    @Builder.Default
+    private BigDecimal splitRemaining = BigDecimal.ZERO;
+
+    @Column(name = "open_game_id")
+    private Long openGameId;
+
+    @Column(name = "notes")
+    private String notes;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     @Builder.Default

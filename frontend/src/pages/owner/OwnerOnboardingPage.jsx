@@ -1,5 +1,6 @@
 import {
   useState,
+  useEffect,
 } from 'react';
 
 import {
@@ -29,7 +30,6 @@ import {
 
 import { register, login } from '@/api/auth';
 import { setSession } from '@/api/client';
-import { toUserMessage } from '@/utils/errorMessage';
 import { useLocation } from 'react-router-dom';
 
 import {
@@ -86,9 +86,6 @@ const STEPS = [
   { id: 'review', label: 'Review & Submit' },
 ];
 
-const VENUE_SPORTS = 'Football · Cricket · Futsal · Badminton';
-const VENUE_PITCHES = '3 pitches (custom slot times per sport)';
-
 export default function OwnerOnboardingPage() {
   const { showToast } = useToast();
   const submitted = useDisclosure();
@@ -125,6 +122,51 @@ export default function OwnerOnboardingPage() {
   const [venueName, setVenueName] = useState('');
   const [location, setLocation] = useState({ address: '', area: '', lat: null, lng: null });
   const [saving, setSaving] = useState(false);
+  const [hasHydrated, setHasHydrated] = useState(false);
+
+  useEffect(() => {
+    if (hasHydrated || !myRequests?.length) return;
+    const latest = myRequests[0];
+    if (latest && latest.status === 'PENDING') {
+      queueMicrotask(() => {
+        if (latest.ownerName) setOwnerName(latest.ownerName);
+        if (latest.ownerPhone) setOwnerPhone(latest.ownerPhone);
+        if (latest.docOwnerNid) setNid(latest.docOwnerNid);
+        if (latest.venueName) setVenueName(latest.venueName);
+        if (latest.address || latest.area) {
+          setLocation({
+            address: latest.address || '',
+            area: latest.area || '',
+            lat: latest.lat != null ? Number(latest.lat) : null,
+            lng: latest.lng != null ? Number(latest.lng) : null,
+          });
+        }
+        if (latest.docTradeLicense) {
+          setDocuments((prev) => ({
+            ...prev,
+            tradeLicense: { name: 'Trade License', size: 'Attached', url: latest.docTradeLicense },
+          }));
+        }
+        if (latest.docUtilityBill) {
+          setDocuments((prev) => ({
+            ...prev,
+            leaseProof: { name: 'Utility / Lease Proof', size: 'Attached', url: latest.docUtilityBill },
+          }));
+        }
+        if (latest.photosJson) {
+          try {
+            const parsed = JSON.parse(latest.photosJson);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setPhotos(parsed.map((url, idx) => ({ id: `saved-${idx}`, name: `Photo ${idx + 1}`, url, preview: url })));
+            }
+          } catch {
+            // ignore
+          }
+        }
+        setHasHydrated(true);
+      });
+    }
+  }, [myRequests, hasHydrated]);
 
   const located = Number.isFinite(location.lat) && Number.isFinite(location.lng);
   const documentCount = [documents.tradeLicense, documents.leaseProof].filter(Boolean).length;
@@ -137,92 +179,62 @@ export default function OwnerOnboardingPage() {
       label: 'Coordinates',
       value: located ? `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}` : 'Not set yet',
     },
-    { id: 'sports', label: 'Sports', value: VENUE_SPORTS },
-    { id: 'pitches', label: 'Pitches & Slots', value: VENUE_PITCHES },
+    // Sports/pitch setup happens in Venue Setup after approval — the old
+    // review step asserted hardcoded "Football · Cricket · Futsal · Badminton"
+    // and "3 pitches" that submit() never sent (it sends pitchCount: 1).
+    { id: 'next', label: 'After approval', value: 'Add pitches, sports & pricing in Venue Setup' },
   ];
 
-  const handleFileUpload = async (event, docType) => {
+  const handleFileUpload = (event, docType) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
     const formattedSize = `${sizeMb > 0 ? sizeMb : '<0.1'} MB`;
     const previewUrl = URL.createObjectURL(file);
-    const docInfo = { name: file.name, size: formattedSize, url: previewUrl };
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('type', docType);
-      await recordTurfDocName(formData);
-    } catch (error) {
-      // This used to fall through to the success toast, so an owner believed a
-      // trade licence or lease proof had been filed for verification when it
-      // only ever existed as a blob URL in this tab, lost on the next refresh.
-      URL.revokeObjectURL(previewUrl);
-      showToast(toUserMessage(error, `Could not add ${file.name}. Please try again.`));
-      return;
-    }
+    const docInfo = { name: file.name, size: formattedSize, url: previewUrl, file };
 
     if (docType === 'tradeLicense') {
+      if (documents.tradeLicense?.url?.startsWith('blob:')) {
+        URL.revokeObjectURL(documents.tradeLicense.url);
+      }
       setDocuments((prev) => ({ ...prev, tradeLicense: docInfo }));
     } else if (docType === 'leaseProof') {
+      if (documents.leaseProof?.url?.startsWith('blob:')) {
+        URL.revokeObjectURL(documents.leaseProof.url);
+      }
       setDocuments((prev) => ({ ...prev, leaseProof: docInfo }));
     }
-    // The file is not stored anywhere; only its name travels with the request.
-    showToast(`${file.name} listed on your request — bring the original to verification`);
+    showToast(`${file.name} selected ✓`);
   };
 
-  const handlePhotoUpload = async (event) => {
+  const handlePhotoUpload = (event) => {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
 
-    let uploaded = 0;
-    let failed = 0;
-
-    for (const file of files) {
+    const newPhotos = files.map((file) => {
       const previewUrl = URL.createObjectURL(file);
-      let persistentUrl = null;
-
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
-        const res = await uploadTurfPhoto(formData);
-        persistentUrl = res?.url ?? res?.data?.url ?? null;
-        if (!persistentUrl) throw new Error('No stored location returned');
-      } catch {
-        // This used to substitute a hardcoded Unsplash stock photo, so a failed
-        // upload produced a listing showing someone else's field as if it were
-        // this venue. A photo that did not upload is simply not added.
-        URL.revokeObjectURL(previewUrl);
-        failed += 1;
-        continue;
-      }
-
-      const newPhoto = {
+      return {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: file.name,
-        url: persistentUrl,
+        url: previewUrl,
         preview: previewUrl,
+        file,
       };
+    });
 
-      setPhotos((prev) => [...prev, newPhoto]);
-      uploaded += 1;
-    }
-
-    if (failed > 0) {
-      showToast(
-        uploaded > 0
-          ? `${uploaded} photo(s) added — ${failed} could not be uploaded.`
-          : `Could not upload ${failed} photo(s). Please try again.`,
-      );
-      return;
-    }
-    showToast(`${uploaded} venue photo(s) added ✓`);
+    setPhotos((prev) => [...prev, ...newPhotos]);
+    showToast(`${newPhotos.length} photo(s) selected ✓`);
   };
 
   const handleRemovePhoto = (id) => {
-    setPhotos((prev) => prev.filter((p) => p.id !== id));
+    setPhotos((prev) => {
+      const target = prev.find((p) => p.id === id);
+      if (target?.preview?.startsWith('blob:')) {
+        URL.revokeObjectURL(target.preview);
+      }
+      return prev.filter((p) => p.id !== id);
+    });
     showToast('Photo removed');
   };
 
@@ -293,12 +305,50 @@ export default function OwnerOnboardingPage() {
         }
       }
 
-      // A blob URL only exists in this tab. Submitting one used to be papered
-      // over with a stock Unsplash field, so the listing showed a pitch that
-      // was not this venue. An unstored photo is simply not submitted.
-      const photoUrls = photos
-        .map((p) => p.url)
-        .filter((url) => typeof url === 'string' && !url.startsWith('blob:'));
+      // 1. Upload verification documents (now authenticated)
+      let docTradeLicenseUrl = documents.tradeLicense?.name;
+      if (documents.tradeLicense?.file) {
+        try {
+          const fd = new FormData();
+          fd.append('file', documents.tradeLicense.file);
+          fd.append('type', 'tradeLicense');
+          const res = await recordTurfDocName(fd);
+          if (res?.url) docTradeLicenseUrl = res.url;
+        } catch (err) {
+          console.warn('Could not upload trade license file to storage:', err);
+        }
+      }
+
+      let docUtilityBillUrl = documents.leaseProof?.name;
+      if (documents.leaseProof?.file) {
+        try {
+          const fd = new FormData();
+          fd.append('file', documents.leaseProof.file);
+          fd.append('type', 'leaseProof');
+          const res = await recordTurfDocName(fd);
+          if (res?.url) docUtilityBillUrl = res.url;
+        } catch (err) {
+          console.warn('Could not upload lease proof file to storage:', err);
+        }
+      }
+
+      // 2. Upload venue photos (now authenticated)
+      const photoUrls = [];
+      for (const p of photos) {
+        if (p.file) {
+          try {
+            const fd = new FormData();
+            fd.append('file', p.file);
+            const res = await uploadTurfPhoto(fd);
+            const uploadedUrl = res?.url ?? res?.data?.url;
+            if (uploadedUrl) photoUrls.push(uploadedUrl);
+          } catch (err) {
+            console.warn('Failed to upload photo:', p.name, err);
+          }
+        } else if (typeof p.url === 'string' && !p.url.startsWith('blob:')) {
+          photoUrls.push(p.url);
+        }
+      }
 
       await createTurfRequest({
         venueName: venueName.trim(),
@@ -307,9 +357,9 @@ export default function OwnerOnboardingPage() {
         sportsCsv: 'Football',
         ownerPhone: ownerPhone,
         ownerEmail: authState?.signupEmail || undefined,
-        docTradeLicense: documents.tradeLicense?.name || undefined,
+        docTradeLicense: docTradeLicenseUrl || undefined,
         docOwnerNid: nid || undefined,
-        docUtilityBill: documents.leaseProof?.name || undefined,
+        docUtilityBill: docUtilityBillUrl || undefined,
         photos: photoUrls,
       });
 
@@ -509,7 +559,10 @@ export default function OwnerOnboardingPage() {
                 <Field label="NID number" htmlFor="on3">
                   <Input id="on3" className="num" value={nid} onChange={(e) => setNid(e.target.value)} />
                 </Field>
-                <Button block onClick={nextToVenue} style={{ marginTop: 20 }}>Next Step &rarr;</Button>
+                {/* Forward motion is the step's primary action; it used to be
+                    the default (secondary) variant while only submit was
+                    primary, making every wizard screen's key button weak. */}
+                <Button block variant="primary" onClick={nextToVenue} style={{ marginTop: 20 }}>Next Step &rarr;</Button>
               </Card>
             )}
 
@@ -525,7 +578,7 @@ export default function OwnerOnboardingPage() {
                 <LocationPicker value={location} onChange={setLocation} label="Exact turf location" />
                 <div className="row" style={{ marginTop: 24, gap: 12 }}>
                   <Button variant="secondary" onClick={() => setStep('owner')}>&larr; Back</Button>
-                  <Button block onClick={nextToDocs}>Next Step &rarr;</Button>
+                  <Button block variant="primary" onClick={nextToDocs}>Next Step &rarr;</Button>
                 </div>
               </Card>
             )}
@@ -538,23 +591,36 @@ export default function OwnerOnboardingPage() {
                 </p>
 
                 <div className="field" style={{ marginTop: 12 }}>
-                  <label>Trade License</label>
+                  <label htmlFor="doc-trade">Trade License</label>
                   <Panel className="between" style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 12 }}>
                     {documents.tradeLicense ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <span style={{ fontSize: 18 }}>[doc]</span>
                         <div>
-                          <span onClick={() => setPreviewFile(documents.tradeLicense)} style={{ color: 'var(--brand-500)', textDecoration: 'underline', cursor: 'pointer' }} title="Click to view document">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewFile(documents.tradeLicense)}
+                            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--brand-500)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}
+                            title="View document"
+                          >
                             <b>{documents.tradeLicense.name}</b>
-                          </span>
-                          <span className="tiny muted" style={{ display: 'block' }}>{documents.tradeLicense.size} - Listed ✓</span>
+                          </button>
+                          <span className="tiny muted" style={{ display: 'block' }}>{documents.tradeLicense.size} - Uploaded ✓</span>
                         </div>
                       </div>
                     ) : (
                       <span className="small muted">No trade license document attached yet</span>
                     )}
-                    <label style={{ cursor: 'pointer', margin: 0 }}>
-                      <input type="file" accept=".pdf,.png,.jpg,.jpeg" style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'tradeLicense')} />
+                    {/* Visually hidden but focusable: display:none file inputs
+                        removed the control from keyboard/AT reach entirely. */}
+                    <input
+                      id="doc-trade"
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg"
+                      className="sr-only"
+                      onChange={(e) => handleFileUpload(e, 'tradeLicense')}
+                    />
+                    <label htmlFor="doc-trade" style={{ cursor: 'pointer', margin: 0 }}>
                       <Badge tone={documents.tradeLicense ? 'green' : 'blue'} dot={false}>
                         {documents.tradeLicense ? 'Change File' : 'Upload Document'}
                       </Badge>
@@ -563,23 +629,34 @@ export default function OwnerOnboardingPage() {
                 </div>
 
                 <div className="field" style={{ marginTop: 12 }}>
-                  <label>Ownership / Lease Proof</label>
+                  <label htmlFor="doc-lease">Ownership / Lease Proof</label>
                   <Panel className="between" style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 12 }}>
                     {documents.leaseProof ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <span style={{ fontSize: 18 }}>[doc]</span>
                         <div>
-                          <span onClick={() => setPreviewFile(documents.leaseProof)} style={{ color: 'var(--brand-500)', textDecoration: 'underline', cursor: 'pointer' }} title="Click to view document">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewFile(documents.leaseProof)}
+                            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--brand-500)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit' }}
+                            title="View document"
+                          >
                             <b>{documents.leaseProof.name}</b>
-                          </span>
-                          <span className="tiny muted" style={{ display: 'block' }}>{documents.leaseProof.size} - Listed ✓</span>
+                          </button>
+                          <span className="tiny muted" style={{ display: 'block' }}>{documents.leaseProof.size} - Uploaded ✓</span>
                         </div>
                       </div>
                     ) : (
                       <span className="small muted">No ownership or lease agreement attached yet</span>
                     )}
-                    <label style={{ cursor: 'pointer', margin: 0 }}>
-                      <input type="file" accept=".pdf,.png,.jpg,.jpeg" style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'leaseProof')} />
+                    <input
+                      id="doc-lease"
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg"
+                      className="sr-only"
+                      onChange={(e) => handleFileUpload(e, 'leaseProof')}
+                    />
+                    <label htmlFor="doc-lease" style={{ cursor: 'pointer', margin: 0 }}>
                       <Badge tone={documents.leaseProof ? 'green' : 'blue'} dot={false}>
                         {documents.leaseProof ? 'Change File' : 'Upload Document'}
                       </Badge>
@@ -594,13 +671,19 @@ export default function OwnerOnboardingPage() {
                   </div>
                   <Row style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                     {photos.map((photo) => (
-                      <div key={photo.id} style={{ position: 'relative', width: 72, height: 72, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border-soft)', background: 'rgba(0,0,0,0.3)', cursor: 'pointer' }} onClick={() => setPreviewFile(photo)} title="Click to view full image">
-                        <img src={photo.url} alt={photo.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                        <button type="button" onClick={(e) => { e.stopPropagation(); handleRemovePhoto(photo.id); }} style={{ position: 'absolute', top: 2, right: 2, width: 18, height: 18, borderRadius: '50%', background: 'rgba(0,0,0,0.7)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 10, lineHeight: '18px', textAlign: 'center', padding: 0 }} title="Remove photo">x</button>
+                      <div key={photo.id} style={{ position: 'relative', width: 72, height: 72, borderRadius: 12, overflow: 'visible', border: '1px solid var(--border-soft)', background: 'rgba(0,0,0,0.3)', cursor: 'pointer' }} onClick={() => setPreviewFile(photo)} title="View full image">
+                        <img src={photo.url} alt={photo.name} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 12 }} />
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleRemovePhoto(photo.id); }}
+                          aria-label={`Remove ${photo.name}`}
+                          style={{ position: 'absolute', top: -6, right: -6, width: 26, height: 26, borderRadius: '50%', background: 'rgba(0,0,0,0.75)', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1, textAlign: 'center', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                          title="Remove photo"
+                        >x</button>
                       </div>
                     ))}
-                    <label style={{ cursor: 'pointer', margin: 0 }}>
-                      <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={handlePhotoUpload} />
+                    <input id="photos-upload" type="file" accept="image/*" multiple className="sr-only" onChange={handlePhotoUpload} />
+                    <label htmlFor="photos-upload" style={{ cursor: 'pointer', margin: 0 }}>
                       <div style={{ width: 72, height: 72, borderRadius: 12, border: '2px dashed var(--brand-600)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(34, 197, 94, 0.06)', color: 'var(--brand-600)', fontWeight: 700, fontSize: 11, gap: 2 }}>
                         <span style={{ fontSize: 18, lineHeight: 1 }}>+</span> Upload
                       </div>
@@ -610,7 +693,7 @@ export default function OwnerOnboardingPage() {
 
                 <div className="row" style={{ marginTop: 24, gap: 12 }}>
                   <Button variant="secondary" onClick={() => setStep('venue')}>&larr; Back</Button>
-                  <Button block onClick={nextToReview}>Next Step &rarr;</Button>
+                  <Button block variant="primary" onClick={nextToReview}>Next Step &rarr;</Button>
                 </div>
               </Card>
             )}
@@ -638,7 +721,8 @@ export default function OwnerOnboardingPage() {
                 <label className="checkline" style={{ marginTop: 16, marginBottom: 14 }}>
                   <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
                   <span>
-                    I confirm the information is accurate and I accept the <a href="#owner-terms">Owner Terms</a> and 6% platform commission.
+                    I confirm the information is accurate and I accept the platform&apos;s terms
+                    of service and 6% platform commission on bookings.
                   </span>
                 </label>
 
@@ -654,6 +738,9 @@ export default function OwnerOnboardingPage() {
         )}
       </div>
 
+      {/* Single success surface: the inline step==='submit' view below is
+          unreachable (submit() opens this overlay, never setStep), so the
+          overlay IS the confirmation. The old code opened both. */}
       <Overlay isOpen={submitted.isOpen} onClose={submitted.close} title="Request Submitted" hideHeader className="center">
         <div className="check-anim" style={{ background: 'var(--green)' }} aria-hidden="true">✓</div>
         <h3>Request Submitted</h3>
